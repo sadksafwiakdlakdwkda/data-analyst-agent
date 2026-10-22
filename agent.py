@@ -1,112 +1,85 @@
+"""Dataset-isolated SQL analysis agent using DuckDB and LangGraph."""
+
 from pathlib import Path
 from threading import Lock
 
 import duckdb
 from dotenv import load_dotenv
-from sqlglot import parse, exp
+from sqlglot import exp, parse
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
-from langchain_core.messages import (
-    AIMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
 from langchain_openai import ChatOpenAI
-
-from langgraph.graph import (
-    StateGraph,
-    START,
-    END,
-    MessagesState,
-)
-from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.errors import GraphRecursionError
-
-
-# ==========================================
-# 1. Project paths and output limits
-# ==========================================
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CSV_PATH = PROJECT_DIR / "sales.csv"
 MAX_OUTPUT_CHARS = 10_000
 MAX_RESULT_ROWS = 100
+MAX_SQL_ERRORS = 2
+
+SYSTEM_PROMPT = (
+    "You are a reliable data analysis assistant. "
+    "Always inspect the dataset before generating SQL. "
+    "Only query the sales table. "
+    "Use execute_sql for calculations. "
+    "If SQL fails, inspect the error message and correct the query before retrying. "
+    "Never repeat the exact same failed SQL. "
+    "Never invent query results. "
+    "If analysis fails, explain the problem."
+)
 
 
 def limit_output(text: str) -> str:
-    """Bound tool response length, including the truncation notice."""
+    """Limit tool output, including the truncation notice."""
     notice = "\n[Output truncated; refine the query.]"
     if len(text) <= MAX_OUTPUT_CHARS:
         return text
-    return text[:MAX_OUTPUT_CHARS - len(notice)] + notice
+    return text[: MAX_OUTPUT_CHARS - len(notice)] + notice
 
 
-# ==========================================
-# 2. Initialize DuckDB
-# ==========================================
+def create_dataset_connection(dataset_path: Path) -> duckdb.DuckDBPyConnection:
+    """Load one CSV into a new, independent in-memory DuckDB connection."""
+    connection = duckdb.connect(":memory:")
+    try:
+        connection.execute(
+            "CREATE TABLE sales AS SELECT * FROM read_csv_auto(?)",
+            [str(Path(dataset_path).resolve())],
+        )
+        return connection
+    except Exception:
+        connection.close()
+        raise
 
-conn = duckdb.connect(":memory:")
-db_lock = Lock()
-
-with db_lock:
-    conn.read_csv(str(CSV_PATH)).create_view("sales")
-
-
-# ==========================================
-# 3. SQL Safety Validation
-# ==========================================
 
 def _validated_sql(query: str) -> tuple[exp.Select | None, str | None]:
-    """Return the validated AST, so execution uses exactly what was checked."""
-
+    """Return a validated SQL AST or a readable validation error."""
     try:
-        # SQLGlot may represent a comment after ';' as an empty Semicolon node.
         statements = [
-            s for s in parse(query, read="duckdb")
-            if s is not None and not isinstance(s, exp.Semicolon)
+            statement
+            for statement in parse(query, read="duckdb")
+            if statement is not None and not isinstance(statement, exp.Semicolon)
         ]
+    except Exception as error:
+        return None, f"Invalid SQL syntax: {error}"
 
-    except Exception as e:
-        return None, f"Invalid SQL syntax: {e}"
-
-    # Allow only one statement
     if len(statements) != 1:
         return None, "Only one SQL statement is allowed."
 
     ast = statements[0]
-
-    # Only allow SELECT
     if not isinstance(ast, exp.Select):
         return None, "Only SELECT queries are allowed."
 
-    # Block dangerous operations
-    forbidden = (
-        exp.Insert,
-        exp.Update,
-        exp.Delete,
-        exp.Create,
-        exp.Drop,
-        exp.Command,
-    )
-
-    if any(
-        isinstance(node, forbidden)
-        for node in ast.walk()
-    ):
+    forbidden = (exp.Insert, exp.Update, exp.Delete, exp.Create, exp.Drop, exp.Command)
+    if any(isinstance(node, forbidden) for node in ast.walk()):
         return None, "SQL contains a forbidden operation."
 
-    # Restrict accessible tables
     for table in ast.find_all(exp.Table):
-        if (
-            table.name.lower() != "sales"
-            or table.db
-            or table.catalog
-        ):
+        if table.name.lower() != "sales" or table.db or table.catalog:
             return None, f"Unauthorized table: {table.sql()}"
 
-    # Conservative restriction for this MVP:
-    # disallow subqueries, CTEs and custom/unknown functions
     if any(
         isinstance(node, (exp.Subquery, exp.CTE, exp.Anonymous))
         for node in ast.walk()
@@ -117,258 +90,211 @@ def _validated_sql(query: str) -> tuple[exp.Select | None, str | None]:
 
 
 def validate_sql(query: str) -> str | None:
-    """Validate SQL before execution; return None when accepted."""
+    """Return None for accepted SQL, otherwise a validation error."""
     return _validated_sql(query)[1]
 
 
-# ==========================================
-# 4. Define Tools
-# ==========================================
+def create_tools(connection: duckdb.DuckDBPyConnection):
+    """Build tools whose closures share only this dataset connection."""
+    connection_lock = Lock()
 
-@tool
-def inspect_dataset() -> str:
-    """Return the schema and row count of the sales dataset."""
+    @tool
+    def inspect_dataset() -> str:
+        """Return the schema and row count of the sales dataset."""
+        try:
+            with connection_lock:
+                schema = connection.execute("DESCRIBE sales").fetchdf()
+                count = connection.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+            return limit_output(
+                f"Schema:\n{schema.to_string(index=False)}\n\nTotal rows: {count}"
+            )
+        except Exception as error:
+            return limit_output(f"Dataset Inspection Error: {error}")
 
-    try:
-        with db_lock:
-            schema = conn.execute("DESCRIBE sales").fetchdf()
-            count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
-        return limit_output(
-            f"Schema:\n{schema.to_string(index=False)}\n\nTotal rows: {count}"
-        )
-    except Exception as e:
-        return limit_output(f"Dataset Inspection Error: {e}")
+    @tool
+    def execute_sql(query: str) -> str:
+        """Execute a validated SQL SELECT query on the sales table."""
+        ast, error = _validated_sql(query)
+        if error:
+            return limit_output(f"SQL Validation Error: {error}")
 
+        try:
+            safe_query = (
+                exp.select("*")
+                .from_(ast.subquery("limited_result"))
+                .limit(MAX_RESULT_ROWS)
+                .sql(dialect="duckdb", comments=False)
+            )
+            with connection_lock:
+                result = connection.execute(safe_query).fetchdf()
+            return limit_output(result.to_string(index=False))
+        except Exception as error:
+            return limit_output(f"SQL Execution Error: {error}")
 
-@tool
-def execute_sql(query: str) -> str:
-    """Execute a validated SQL SELECT query on the sales table."""
-
-    # Validate before execution
-    ast, error = _validated_sql(query)
-
-    if error:
-        return limit_output(f"SQL Validation Error: {error}")
-
-    try:
-        # Restrict output size at the SQL level
-        safe_query = (
-            exp.select("*")
-            .from_(ast.subquery("limited_result"))
-            .limit(MAX_RESULT_ROWS)
-            .sql(dialect="duckdb", comments=False)
-        )
-        with db_lock:
-            result = conn.execute(safe_query).fetchdf()
-        return limit_output(result.to_string(index=False))
-
-    except Exception as e:
-        return limit_output(f"SQL Execution Error: {e}")
+    return [inspect_dataset, execute_sql]
 
 
-# ==========================================
-# 5. Lazy LLM initialization
-# ==========================================
-
-tools = [inspect_dataset, execute_sql]
-
-llm = None
-llm_with_tools = None
-llm_lock = Lock()
+_model = None
+_model_lock = Lock()
 
 
 def get_models():
-    """Initialize credentials and models only when analysis needs the LLM."""
-    global llm, llm_with_tools
-    with llm_lock:
-        if llm is None or llm_with_tools is None:
+    """Lazily initialize the base LLM; tools are bound per request."""
+    global _model
+    with _model_lock:
+        if _model is None:
             load_dotenv(PROJECT_DIR / ".env")
-            model = ChatOpenAI(
-                model="gpt-4.1-mini", temperature=0, timeout=30, max_retries=2,
+            _model = ChatOpenAI(
+                model="gpt-4.1-mini",
+                temperature=0,
+                timeout=30,
+                max_retries=2,
             )
-            bound_model = model.bind_tools(tools)
-            llm, llm_with_tools = model, bound_model
-    return llm, llm_with_tools
+    return _model
 
 
 def model_failure():
-    # Provider exception text can contain request data; do not echo it.
-    return {"messages": [AIMessage(content=(
-        "Analysis could not be completed because the model service failed. "
-        "Check OPENAI_API_KEY, network access, and API availability."
-    ))]}
-
-
-# ==========================================
-# 6. Define LangGraph Nodes
-# ==========================================
-
-MAX_SQL_ERRORS = 2
-
-
-def call_model(state: MessagesState):
-    """Call the LLM with conversation history."""
-
-    try:
-        _, model = get_models()
-        response = model.invoke(state["messages"])
-        return {"messages": [response]}
-    except Exception:
-        return model_failure()
-
-
-def count_sql_errors(state: MessagesState) -> int:
-    """Count SQL errors in tool responses."""
-
-    return sum(
-        1
-        for msg in state["messages"]
-        if isinstance(msg, ToolMessage)
-        and (
-            str(msg.content).startswith(
-                "SQL Validation Error:"
-            )
-            or str(msg.content).startswith(
-                "SQL Execution Error:"
-            )
-        )
-    )
-
-
-def after_tools(state: MessagesState):
-    """Decide whether to retry or stop."""
-
-    # Include inspection and ToolNode argument errors in the same retry budget.
-    errors = sum(
-        1 for msg in state["messages"]
-        if isinstance(msg, ToolMessage) and (
-            msg.status == "error" or str(msg.content).startswith((
-                "SQL Validation Error:", "SQL Execution Error:",
-                "Dataset Inspection Error:", "Tool Error:",
-            ))
-        )
-    )
-
-    if errors >= MAX_SQL_ERRORS:
-        return "failure"
-
-    return "llm"
-
-
-def failure_node(state: MessagesState):
-    """Return a clear failure message."""
-
+    """Do not expose provider exceptions, which may contain user data."""
     return {
         "messages": [
-            HumanMessage(
+            AIMessage(
                 content=(
-                    "The tool error limit has been reached. "
-                    "Do not call any more tools. "
-                    "Briefly explain why the analysis could "
-                    "not be completed."
+                    "Analysis could not be completed because the model service failed. "
+                    "Check OPENAI_API_KEY, network access, and API availability."
                 )
             )
         ]
     }
 
 
-def final_failure(state: MessagesState):
-    """Generate a final explanation without tool calls."""
+def after_tools(state: MessagesState):
+    """Stop after the configured number of tool errors."""
+    errors = sum(
+        1
+        for message in state["messages"]
+        if isinstance(message, ToolMessage)
+        and (
+            message.status == "error"
+            or str(message.content).startswith(
+                (
+                    "SQL Validation Error:",
+                    "SQL Execution Error:",
+                    "Dataset Inspection Error:",
+                    "Tool Error:",
+                )
+            )
+        )
+    )
+    return "failure" if errors >= MAX_SQL_ERRORS else "llm"
 
-    try:
-        model, _ = get_models()
-        response = model.invoke(state["messages"])
-        return {"messages": [response]}
-    except Exception:
-        return model_failure()
+
+def failure_node(state: MessagesState):
+    """Tell the final model call to stop using tools."""
+    return {
+        "messages": [
+            HumanMessage(
+                content=(
+                    "The tool error limit has been reached. "
+                    "Do not call any more tools. "
+                    "Briefly explain why the analysis could not be completed."
+                )
+            )
+        ]
+    }
 
 
 def handle_tool_error(error: Exception) -> str:
-    """Keep unexpected tool errors bounded and avoid exposing exception data."""
+    """Hide unexpected exception details from the model."""
     return f"Tool Error: {type(error).__name__}. Check the tool arguments and retry."
 
 
-# ==========================================
-# 7. Build LangGraph
-# ==========================================
+def create_agent_graph(dataset_tools):
+    """Compile a graph whose LLM and ToolNode use the same request tools."""
+    model = get_models()
+    model_with_tools = model.bind_tools(dataset_tools)
 
-graph = StateGraph(MessagesState)
+    def call_model(state: MessagesState):
+        try:
+            response = model_with_tools.invoke(state["messages"])
+            return {"messages": [response]}
+        except Exception:
+            return model_failure()
 
-# Add nodes
-graph.add_node("llm", call_model)
-graph.add_node("tools", ToolNode(tools, handle_tool_errors=handle_tool_error))
-graph.add_node("failure", failure_node)
-graph.add_node("final_failure", final_failure)
+    def final_failure(state: MessagesState):
+        try:
+            response = model.invoke(state["messages"])
+            return {"messages": [response]}
+        except Exception:
+            return model_failure()
 
-# Start
-graph.add_edge(START, "llm")
+    graph = StateGraph(MessagesState)
+    graph.add_node("llm", call_model)
+    graph.add_node(
+        "tools", ToolNode(dataset_tools, handle_tool_errors=handle_tool_error)
+    )
+    graph.add_node("failure", failure_node)
+    graph.add_node("final_failure", final_failure)
 
-# LLM -> Tools or END
-graph.add_conditional_edges(
-    "llm",
-    tools_condition,
-    {
-        "tools": "tools",
-        "__end__": END,
-    },
-)
-
-# Tools -> LLM or Failure
-graph.add_conditional_edges(
-    "tools",
-    after_tools,
-    {
-        "llm": "llm",
-        "failure": "failure",
-    },
-)
-
-# Failure -> Final explanation -> END
-graph.add_edge("failure", "final_failure")
-graph.add_edge("final_failure", END)
-
-# Compile
-agent = graph.compile()
+    graph.add_edge(START, "llm")
+    graph.add_conditional_edges(
+        "llm", tools_condition, {"tools": "tools", "__end__": END}
+    )
+    graph.add_conditional_edges(
+        "tools", after_tools, {"llm": "llm", "failure": "failure"}
+    )
+    graph.add_edge("failure", "final_failure")
+    graph.add_edge("final_failure", END)
+    return graph.compile()
 
 
-# ==========================================
-# 8. Run Agent
-# ==========================================
-
-def run_agent(question: str, *, recursion_limit: int = 20):
-    """Run the shared CLI/evaluation workflow with a graceful loop limit."""
+def run_agent(
+    question: str,
+    *,
+    dataset_path: Path | None = None,
+    recursion_limit: int = 20,
+):
+    """Run one analysis with a dedicated connection, tools, and graph."""
+    path = CSV_PATH if dataset_path is None else Path(dataset_path)
+    connection = create_dataset_connection(path)
     try:
-        return agent.invoke(
-            {
+        dataset_tools = create_tools(connection)
+        dataset_agent = create_agent_graph(dataset_tools)
+        try:
+            return dataset_agent.invoke(
+                {
+                    "messages": [
+                        SystemMessage(content=SYSTEM_PROMPT),
+                        HumanMessage(content=question),
+                    ]
+                },
+                config={"recursion_limit": recursion_limit},
+            )
+        except GraphRecursionError:
+            return {
                 "messages": [
-                    SystemMessage(
+                    AIMessage(
                         content=(
-                            "You are a reliable data analysis assistant. "
-                            "Always inspect the dataset before generating SQL. "
-                            "Only query the sales table. "
-                            "Use execute_sql for calculations. "
-                            "If SQL fails, inspect the error message "
-                            "and correct the query before retrying. "
-                            "Never repeat the exact same failed SQL. "
-                            "Never invent query results. "
-                            "If analysis fails, explain the problem."
+                            "Analysis stopped because the workflow step limit was reached. "
+                            "Try a simpler or more specific question."
                         )
-                    ),
-                    HumanMessage(content=question),
+                    )
                 ]
-            },
-            config={"recursion_limit": recursion_limit},
-        )
-    except GraphRecursionError:
-        return {"messages": [AIMessage(content=(
-            "Analysis stopped because the workflow step limit was reached. "
-            "Try a simpler or more specific question."
-        ))]}
+            }
+    finally:
+        connection.close()
+
+
+def run_dataset_agent(
+    question: str, dataset_path: Path, *, recursion_limit: int = 20
+):
+    """Compatibility wrapper for the existing FastAPI /ask endpoint."""
+    return run_agent(
+        question, dataset_path=dataset_path, recursion_limit=recursion_limit
+    )
 
 
 if __name__ == "__main__":
     question = input("Ask a question about sales: ")
     result = run_agent(question)
-
     print("\n========== FINAL ANSWER ==========")
     print(result["messages"][-1].content)

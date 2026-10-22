@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
+from threading import Lock
 import shutil
 import subprocess
 import sys
@@ -31,9 +32,11 @@ from unittest.mock import patch
 with patch('dotenv.load_dotenv', side_effect=AssertionError('eager dotenv')), \\
      patch('langchain_openai.ChatOpenAI', side_effect=AssertionError('eager LLM')):
     import agent
-    assert agent.llm is None and agent.llm_with_tools is None
-    assert 'Total rows: 5' in agent.inspect_dataset.invoke({})
-    assert '52000' in agent.execute_sql.invoke({'query': 'SELECT SUM(revenue) FROM sales'})
+    assert agent._model is None
+    with agent.create_dataset_connection(agent.CSV_PATH) as connection:
+        tools = {tool.name: tool for tool in agent.create_tools(connection)}
+        assert 'Total rows: 5' in tools['inspect_dataset'].invoke({})
+        assert '52000' in tools['execute_sql'].invoke({'query': 'SELECT SUM(revenue) FROM sales'})
 """
     result = subprocess.run(
         [sys.executable, "-B", "-c", script], cwd=tmp_path, env=env,
@@ -43,17 +46,17 @@ with patch('dotenv.load_dotenv', side_effect=AssertionError('eager dotenv')), \\
 
 
 def test_models_initialized_once_on_first_use(monkeypatch):
-    monkeypatch.setattr(app, "llm", None)
-    monkeypatch.setattr(app, "llm_with_tools", None)
+    monkeypatch.setattr(app, "_model", None)
     dotenv = Mock()
     constructor = Mock()
     monkeypatch.setattr(app, "load_dotenv", dotenv)
     monkeypatch.setattr(app, "ChatOpenAI", constructor)
     first = app.get_models()
-    assert app.get_models() == first
+    assert first is constructor.return_value
+    assert app.get_models() is first
     constructor.assert_called_once()
     dotenv.assert_called_once_with(app.PROJECT_DIR / ".env")
-    constructor.return_value.bind_tools.assert_called_once_with(app.tools)
+    constructor.return_value.bind_tools.assert_not_called()
 
 
 @pytest.mark.parametrize("query", [
@@ -62,8 +65,8 @@ def test_models_initialized_once_on_first_use(monkeypatch):
     "SELECT SUM(revenue) AS total FROM sales; /* trailing comment */",
     "SELECT /* embedded comment */ SUM(revenue) AS total FROM sales;\n",
 ])
-def test_sql_is_generated_from_ast(query):
-    result = app.execute_sql.invoke({"query": query})
+def test_sql_is_generated_from_ast(query, execute_sql):
+    result = execute_sql.invoke({"query": query})
     assert not result.startswith("SQL ")
     assert "52000" in result
 
@@ -79,22 +82,22 @@ def test_sql_is_generated_from_ast(query):
     "UPDATE sales SET revenue = 0", "DROP TABLE sales",
     "SELECT 1; SELECT 2",
 ])
-def test_rejected_sql_never_reaches_database(monkeypatch, query):
+def test_rejected_sql_never_reaches_database(query):
     connection = Mock()
-    monkeypatch.setattr(app, "conn", connection)
-    assert app.execute_sql.invoke({"query": query}).startswith("SQL Validation Error:")
+    _, execute_sql = app.create_tools(connection)
+    assert execute_sql.invoke({"query": query}).startswith("SQL Validation Error:")
     connection.execute.assert_not_called()
 
 
-def test_row_limit():
-    result = app.execute_sql.invoke({
+def test_row_limit(execute_sql):
+    result = execute_sql.invoke({
         "query": "SELECT a.revenue FROM sales a CROSS JOIN sales b CROSS JOIN sales c"
     })
     assert len(result.splitlines()) == app.MAX_RESULT_ROWS + 1
 
 
-def test_output_character_limit():
-    result = app.execute_sql.invoke({
+def test_output_character_limit(execute_sql):
+    result = execute_sql.invoke({
         "query": f"SELECT repeat('x', {app.MAX_OUTPUT_CHARS * 2}) AS value"
     })
     assert len(result) == app.MAX_OUTPUT_CHARS
@@ -102,46 +105,52 @@ def test_output_character_limit():
 
 
 @pytest.mark.parametrize("tool,args,prefix", [
-    (app.inspect_dataset, {}, "Dataset Inspection Error:"),
-    (app.execute_sql, {"query": "SELECT * FROM sales"}, "SQL Execution Error:"),
+    ("inspect_dataset", {}, "Dataset Inspection Error:"),
+    ("execute_sql", {"query": "SELECT * FROM sales"}, "SQL Execution Error:"),
 ])
-def test_database_failures_are_bounded(monkeypatch, tool, args, prefix):
+def test_database_failures_are_bounded(tool, args, prefix):
     connection = Mock()
     connection.execute.side_effect = RuntimeError("x" * (app.MAX_OUTPUT_CHARS * 2))
-    monkeypatch.setattr(app, "conn", connection)
-    result = tool.invoke(args)
+    tools = {item.name: item for item in app.create_tools(connection)}
+    result = tools[tool].invoke(args)
     assert result.startswith(prefix)
     assert len(result) == app.MAX_OUTPUT_CHARS
-    assert not app.db_lock.locked()
+    # A later call must still work after the failed operation released its lock.
+    connection.execute.side_effect = None
+    connection.execute.return_value.fetchdf.return_value.to_string.return_value = "recovered"
+    connection.execute.return_value.fetchone.return_value = (5,)
+    assert "recovered" in tools[tool].invoke(args)
 
 
-def test_shared_connection_lock_covers_execute_and_fetch(monkeypatch):
-    real_connection = app.conn
+def test_shared_connection_lock_covers_execute_and_fetch(monkeypatch, dataset_connection):
+    real_connection = dataset_connection
+    lock = Lock()
+    monkeypatch.setattr(app, "Lock", lambda: lock)
 
     class CheckedResult:
         def fetchdf(self):
-            assert app.db_lock.locked(), "fetchdf must be inside the lock"
+            assert lock.locked(), "fetchdf must be inside the lock"
             return real_connection.fetchdf()
 
         def fetchone(self):
-            assert app.db_lock.locked(), "fetchone must be inside the lock"
+            assert lock.locked(), "fetchone must be inside the lock"
             return real_connection.fetchone()
 
     class CheckedConnection:
         def execute(self, query):
-            assert app.db_lock.locked(), "execute must be inside the lock"
+            assert lock.locked(), "execute must be inside the lock"
             real_connection.execute(query)
             # Yield after execute: without a lock a different tool can replace results.
             time.sleep(0.005)
             return CheckedResult()
 
-    monkeypatch.setattr(app, "conn", CheckedConnection())
+    inspect_dataset, execute_sql = app.create_tools(CheckedConnection())
 
     def run(index):
         if index % 3 == 0:
-            assert "Total rows: 5" in app.inspect_dataset.invoke({})
+            assert "Total rows: 5" in inspect_dataset.invoke({})
         else:
-            result = app.execute_sql.invoke({"query": f"SELECT {1000 + index} AS marker"})
+            result = execute_sql.invoke({"query": f"SELECT {1000 + index} AS marker"})
             assert result.split() == ["marker", str(1000 + index)]
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -157,7 +166,8 @@ def tool_call(name="execute_sql", args=None, call_id="call"):
 @pytest.fixture
 def models(monkeypatch):
     plain, bound = Mock(), Mock()
-    monkeypatch.setattr(app, "get_models", lambda: (plain, bound))
+    plain.bind_tools.return_value = bound
+    monkeypatch.setattr(app, "get_models", lambda: plain)
     return plain, bound
 
 
@@ -170,7 +180,10 @@ def test_graph_success(models):
     ]
     result = app.run_agent("Total revenue?")
     assert result["messages"][-1].content == "The total is 52000."
-    assert app.count_sql_errors(result) == 0
+    assert not any(
+        isinstance(message, ToolMessage) and str(message.content).startswith("SQL ")
+        for message in result["messages"]
+    )
     plain.invoke.assert_not_called()
 
 
@@ -183,7 +196,11 @@ def test_graph_recovers_after_one_sql_error(models):
     ]
     result = app.run_agent("Total revenue?")
     assert result["messages"][-1].content == "52000"
-    assert app.count_sql_errors(result) == 1
+    assert sum(
+        isinstance(message, ToolMessage)
+        and str(message.content).startswith("SQL Execution Error:")
+        for message in result["messages"]
+    ) == 1
     plain.invoke.assert_not_called()
 
 
@@ -193,7 +210,7 @@ def test_graph_stops_after_two_tool_errors(models, monkeypatch, kind):
     if kind == "inspection":
         connection = Mock()
         connection.execute.side_effect = RuntimeError("synthetic failure")
-        monkeypatch.setattr(app, "conn", connection)
+        monkeypatch.setattr(app, "create_dataset_connection", lambda _: connection)
         calls = [tool_call("inspect_dataset", {}, str(i)) for i in range(2)]
     elif kind == "arguments":
         calls = [tool_call(args={}, call_id=str(i)) for i in range(2)]
@@ -211,13 +228,11 @@ def test_graph_stops_after_two_tool_errors(models, monkeypatch, kind):
         assert all(m.status == "error" for m in tool_results)
 
 
-@pytest.mark.parametrize("stage", ["initialization", "model", "final_failure"])
+@pytest.mark.parametrize("stage", ["model", "final_failure"])
 def test_model_errors_are_graceful_and_do_not_echo_provider_data(models, monkeypatch, stage):
     plain, bound = models
     error = RuntimeError("sensitive-provider-request-data")
-    if stage == "initialization":
-        monkeypatch.setattr(app, "get_models", Mock(side_effect=error))
-    elif stage == "model":
+    if stage == "model":
         bound.invoke.side_effect = error
     else:
         bound.invoke.side_effect = [tool_call(call_id="a"), tool_call(call_id="b")]

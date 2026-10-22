@@ -1,19 +1,22 @@
 # Data Analyst Agent
 
-A small command-line sales analysis agent built with LangGraph, OpenAI tool
-calling, DuckDB, and SQLGlot. The agent code stays in `agent.py`.
+A CSV analysis agent built with LangGraph, OpenAI tool calling, DuckDB, and
+SQLGlot. `agent.py` provides the Python interface and CLI; `api.py` provides a
+local FastAPI service for uploading datasets and asking questions.
 
 ## What it does
 
-- Answers natural-language questions about the included `sales.csv` dataset.
-- Exposes two tools: `inspect_dataset()` and `execute_sql(query: str)`.
+- Answers natural-language questions about the included `sales.csv` or another CSV.
+- Creates an independent in-memory database, tool set, and graph for each run.
+- Builds two tools per dataset: `inspect_dataset()` and `execute_sql(query: str)`.
 - Validates SQL before execution and generates the executed query from that AST.
 - Returns at most 100 SQL result rows and 10,000 characters per tool response.
   Longer text includes a truncation notice; refine the query when this happens.
 - Lets the model correct tool failures. After two cumulative tool errors in a
   run, it requests a final explanation using the model without bound tools.
-- Handles model initialization/API failures and workflow step exhaustion with
-  a readable final message through `run_agent()`.
+- Returns readable messages for model invocation failures and workflow step
+  exhaustion. Dataset loading, model initialization, and tool-binding failures
+  propagate to the caller.
 
 The included five-row CSV has `region`, `brand`, and `revenue` columns. Its total
 revenue is 52,000; Toyota totals 36,500, Honda 15,500, Ontario 35,500, and Quebec
@@ -76,29 +79,84 @@ Example questions:
 - What is the total revenue in Quebec?
 
 `sales.csv` is resolved relative to `agent.py`, not the current working directory.
-Keep the CSV beside that file; the module initializes its in-memory DuckDB view
-when imported. Dataset loading is still required at import time.
+Keep the CSV beside that file for default CLI runs. Importing the module does
+not load a dataset or initialize the model. Each `run_agent()` call loads its
+CSV into a dedicated in-memory `sales` table and closes the connection on exit,
+including when graph creation or execution fails.
 
 Python usage:
 
 ```python
-from agent import execute_sql, inspect_dataset, run_agent
-
-print(inspect_dataset.invoke({}))
-print(execute_sql.invoke({"query": "SELECT SUM(revenue) AS total FROM sales"}))
+from pathlib import Path
+from agent import run_agent, run_dataset_agent
 
 result = run_agent("Which brand has the highest total revenue?")
 print(result["messages"][-1].content)
+
+# Select another CSV; each run gets its own database and tools.
+result = run_agent("What is the total revenue?", dataset_path=Path("my_sales.csv"))
+print(result["messages"][-1].content)
+
+# Compatibility interface used by the API.
+result = run_dataset_agent("How many records are there?", Path("my_sales.csv"))
 ```
 
 `run_agent()` supplies the standard system prompt and catches LangGraph recursion
-limits (20 steps by default, adjustable with `recursion_limit=`). The compiled
-`agent` remains available for advanced use; direct `agent.invoke()` callers must
-provide their own prompt and handle recursion exceptions.
+limits (20 steps by default, adjustable with `recursion_limit=`). The base model
+is initialized lazily and cached; each graph binds that model to its own dataset
+tools. There is no global compiled agent or global dataset connection.
 
-The shared DuckDB connection is protected by a lock spanning each entire tool's
-database work, including result fetching. Database operations are serialized,
-even when LangGraph dispatches tool calls in parallel.
+To inspect or query a dataset without calling the model:
+
+```python
+from agent import CSV_PATH, create_dataset_connection, create_tools
+
+connection = create_dataset_connection(CSV_PATH)
+try:
+    tools = {tool.name: tool for tool in create_tools(connection)}
+    print(tools["inspect_dataset"].invoke({}))
+    print(tools["execute_sql"].invoke({
+        "query": "SELECT SUM(revenue) AS total FROM sales"
+    }))
+finally:
+    connection.close()
+```
+
+Each tool set shares a lock spanning database execution and result fetching.
+Calls using the same tool set are serialized; separate datasets have independent
+connections and locks. Advanced callers can build a graph with
+`create_agent_graph(dataset_tools)` and must manage their connection's lifetime,
+initial messages, and graph exceptions themselves.
+
+## Local API
+
+The API requires additional packages that are currently not included in
+`requirements.txt`. Install them into the same environment and start the service:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install fastapi python-multipart uvicorn
+.\.venv\Scripts\python.exe -m uvicorn api:app --reload --host 127.0.0.1
+```
+
+Open `http://127.0.0.1:8000/docs` to try the endpoints:
+
+- `GET /health` returns `{"status": "ok"}`.
+- `POST /upload` accepts a multipart `file` with a `.csv` filename, up to 5 MB.
+  The CSV must parse and contain at least one data row. The response includes
+  `dataset_id`, `filename`, `size`, `row_count`, and `columns`.
+- `POST /ask` accepts a JSON question and the `dataset_id` returned by upload:
+
+  ```json
+  {"question": "What is the total revenue?", "dataset_id": "<dataset UUID>"}
+  ```
+
+  It returns `{"answer": "..."}`. Questions must contain 1–2,000 characters;
+  a missing dataset returns 404. Actual analysis requires model credentials.
+
+Uploads are saved under `uploads/` with server-generated UUID filenames. This
+directory is ignored by Git. Uploaded files persist on disk until removed;
+the per-analysis in-memory connection is closed after each run. The API has no
+authentication or automatic upload cleanup and is intended for local use.
 
 ## Tests and evaluation
 
@@ -111,7 +169,9 @@ Run all offline tests from the repository root:
 
 Tests exercise SQL validation and execution, file-path resolution without API
 credentials, concurrent database access, row/text limits, model failures,
-tool-error recovery, recursion limits, and evaluation matching. Model calls in
+tool-error recovery, recursion limits, dataset isolation, per-request tool binding,
+connection cleanup, and evaluation matching. Pytest collects `tests/` by default.
+Model calls in
 tests are mocked; tests do not validate real OpenAI connectivity or model quality.
 
 Run the five-question live evaluation separately:
@@ -141,7 +201,8 @@ supported.
 
 **This is not a security sandbox for hostile SQL.** AST validation and tested
 file-reader rejection do not prove that every DuckDB capability is inaccessible.
-DuckDB external access is not disabled, and the CSV remains a file-backed view.
+DuckDB external access is not disabled. The CSV is materialized into an in-memory
+table during dataset loading.
 There is no OS/process isolation, database query timeout, or explicit CPU/memory
 budget. Large expressions, large individual values, or expensive joins can still
 consume resources before the result is fetched and formatted. The character cap
@@ -150,8 +211,8 @@ The graph step limit also cannot interrupt a single long-running SQL query.
 
 Use only with trusted local data and inputs. Before exposing it to untrusted
 users, add database capability restrictions, query cancellation, resource limits,
-and process isolation. Disabling external access would require changing the
-file-backed view to a materialized table or deliberately allowing the CSV path.
+and process isolation. Any external-access restrictions must still allow the
+initial CSV load.
 
 The instructions to inspect data first, avoid repeated failed SQL, and avoid
 invented answers are model prompts rather than enforced state-machine guarantees.
@@ -159,12 +220,14 @@ The error budget is cumulative across the messages in a run, including errors
 separated by successful tool calls; it is checked after a tool batch finishes.
 Model calls use a 30-second request timeout and up to two client retries; these
 are not an overall analysis deadline. SQL/inspection error text may reveal local
-paths or schema details. Provider exception bodies are not echoed to the user.
+paths or schema details. Model invocation errors are replaced with a generic
+message; initialization and tool-binding exceptions propagate to the caller.
 
 ## Project files and Git hygiene
 
 ```text
 agent.py                 Tools, SQL validation, lazy LLM setup, graph, CLI
+api.py                   Local FastAPI upload and question endpoints
 evaluation.py            Live evaluation and exact-answer matching
 sales.csv                Included five-row dataset
 requirements.txt         Pinned direct runtime dependencies
@@ -172,6 +235,7 @@ requirements-dev.txt     Runtime requirements plus Pytest
 .env.example             Credential placeholder
 .gitignore               Secrets, environments, caches, databases, generated files
 tests/                   Offline tests
+uploads/                 Local uploaded datasets (ignored by Git)
 ```
 
 Before the first commit, review the staged file list. Commit source, tests,
