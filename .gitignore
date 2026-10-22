@@ -1,0 +1,37 @@
+# Environment variables (API keys)
+.env
+.env.*
+!.env.example
+
+# Python virtual environment
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Local databases
+*.duckdb
+*.duckdb.wal
+*.db
+*.db-wal
+
+# Logs and build artifacts
+*.log
+build/
+dist/
+*.egg-info/
+
+# Generated files
+outputs/
