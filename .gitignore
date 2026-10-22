@@ -35,3 +35,5 @@ dist/
 
 # Generated files
 outputs/
+
+.pytest_tmp/
