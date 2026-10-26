@@ -1,9 +1,14 @@
 """Dataset-isolated SQL analysis agent using DuckDB and LangGraph."""
 
+import json
+import math
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from threading import Lock
 
 import duckdb
+import numpy as np
+import pandas as pd
 from dotenv import load_dotenv
 from sqlglot import exp, parse
 
@@ -94,6 +99,60 @@ def validate_sql(query: str) -> str | None:
     return _validated_sql(query)[1]
 
 
+def json_value(value):
+    """Normalize DataFrame cells, including DuckDB nested/masked arrays."""
+    if value is None or value is pd.NA or value is pd.NaT or value is np.ma.masked:
+        return None
+    if isinstance(value, (np.ndarray, list, tuple)):
+        return [json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): json_value(item) for key, item in value.items()}
+    if isinstance(value, np.datetime64):
+        return None if np.isnat(value) else pd.Timestamp(value).isoformat()
+    if isinstance(value, np.timedelta64):
+        return None if np.isnat(value) else pd.Timedelta(value).isoformat()
+    if isinstance(value, np.generic):
+        return json_value(value.item())
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        return pd.Timedelta(value).isoformat()
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    # Decimal and uncommon object values retain a JSON-safe text representation.
+    return str(value)
+
+
+def structured_result(frame: pd.DataFrame, sql: str) -> dict | None:
+    """Serialize the fetched frame, keeping complete rows within the output cap."""
+    result = {
+        "sql": sql,
+        "columns": [str(column) for column in frame.columns],
+        "rows": [
+            [json_value(value) for value in row]
+            for row in frame.itertuples(index=False, name=None)
+        ],
+    }
+    while len(json.dumps(result, ensure_ascii=False, allow_nan=False)) > MAX_OUTPUT_CHARS:
+        if not result["rows"]:
+            # Even the SQL/column metadata cannot fit the output budget.
+            return None
+        result["rows"].pop()
+    return result
+
+
+def latest_query_result(messages) -> dict:
+    """Use the last SQL call in graph message order, including failed calls."""
+    for message in reversed(messages):
+        if isinstance(message, ToolMessage) and message.name == "execute_sql":
+            if message.status != "error" and isinstance(message.artifact, dict):
+                return message.artifact
+            break
+    return {"sql": None, "columns": [], "rows": []}
+
+
 def create_tools(connection: duckdb.DuckDBPyConnection):
     """Build tools whose closures share only this dataset connection."""
     connection_lock = Lock()
@@ -111,12 +170,12 @@ def create_tools(connection: duckdb.DuckDBPyConnection):
         except Exception as error:
             return limit_output(f"Dataset Inspection Error: {error}")
 
-    @tool
-    def execute_sql(query: str) -> str:
+    @tool(response_format="content_and_artifact")
+    def execute_sql(query: str) -> tuple[str, dict | None]:
         """Execute a validated SQL SELECT query on the sales table."""
         ast, error = _validated_sql(query)
         if error:
-            return limit_output(f"SQL Validation Error: {error}")
+            return limit_output(f"SQL Validation Error: {error}"), None
 
         try:
             safe_query = (
@@ -127,9 +186,12 @@ def create_tools(connection: duckdb.DuckDBPyConnection):
             )
             with connection_lock:
                 result = connection.execute(safe_query).fetchdf()
-            return limit_output(result.to_string(index=False))
+            return (
+                limit_output(result.to_string(index=False)),
+                structured_result(result, safe_query),
+            )
         except Exception as error:
-            return limit_output(f"SQL Execution Error: {error}")
+            return limit_output(f"SQL Execution Error: {error}"), None
 
     return [inspect_dataset, execute_sql]
 
@@ -260,7 +322,7 @@ def run_agent(
         dataset_tools = create_tools(connection)
         dataset_agent = create_agent_graph(dataset_tools)
         try:
-            return dataset_agent.invoke(
+            result = dataset_agent.invoke(
                 {
                     "messages": [
                         SystemMessage(content=SYSTEM_PROMPT),
@@ -270,7 +332,7 @@ def run_agent(
                 config={"recursion_limit": recursion_limit},
             )
         except GraphRecursionError:
-            return {
+            result = {
                 "messages": [
                     AIMessage(
                         content=(
@@ -280,6 +342,7 @@ def run_agent(
                     )
                 ]
             }
+        return {**result, **latest_query_result(result["messages"])}
     finally:
         connection.close()
 

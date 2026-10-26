@@ -130,11 +130,9 @@ initial messages, and graph exceptions themselves.
 
 ## Local API
 
-The API requires additional packages that are currently not included in
-`requirements.txt`. Install them into the same environment and start the service:
+API and Streamlit packages are included in `requirements.txt`. Start the service:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install fastapi python-multipart uvicorn
 .\.venv\Scripts\python.exe -m uvicorn api:app --reload --host 127.0.0.1
 ```
 
@@ -150,8 +148,76 @@ Open `http://127.0.0.1:8000/docs` to try the endpoints:
   {"question": "What is the total revenue?", "dataset_id": "<dataset UUID>"}
   ```
 
-  It returns `{"answer": "..."}`. Questions must contain 1–2,000 characters;
+  It returns the answer plus structured query results, for example:
+
+  ```json
+  {
+    "answer": "Total revenue is 52000.",
+    "sql": "SELECT * FROM (SELECT SUM(revenue) AS total FROM sales) AS limited_result LIMIT 100",
+    "columns": ["total"],
+    "rows": [[52000]]
+  }
+  ```
+
+  Questions must contain 1–2,000 characters;
   a missing dataset returns 404. Actual analysis requires model credentials.
+
+In a second terminal, start the chat interface:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+Open `http://localhost:8501`, upload `sales.csv`, click **Load Dataset**, and ask
+"Which brand has the highest total revenue?". Check the answer, SQL block and
+table, then ask another question to confirm previous tables remain in chat.
+For an API-only check, upload `sales.csv` using `/docs`, copy its `dataset_id`
+into `/ask`, and inspect the four response fields. Ask for a filter that matches
+no rows to verify that a successful empty table still displays its column names.
+
+### Structured result flow and policy
+
+The validated, row-limited query executes once under the existing connection
+lock. The fetched DataFrame supplies both the bounded text for the model and a
+JSON-safe artifact. LangChain's `content_and_artifact` tool format attaches the
+artifact to its `ToolMessage`; the model still receives text. Ordinary
+`execute_sql.invoke({"query": ...})` calls still return a string. Advanced callers
+can invoke with a full tool call to access the message's `artifact`.
+
+`run_agent()` retains `messages` and adds `sql`, `columns`, and `rows` from the
+last `execute_sql` ToolMessage in graph message order. For parallel calls in a
+single batch, the model's tool-call order determines the last result, regardless
+of completion order. Inspection calls do not replace SQL results. A failed last
+SQL call (including invalid arguments) clears the exposed result; a later
+successful retry replaces it. No SQL call, or recursion-limit termination,
+returns `sql: null`, `columns: []`, `rows: []`. A model-service failure after a
+successful SQL call retains that query's result alongside the failure answer.
+Every execution has its own connection, tools, graph messages and artifacts;
+there is no shared result cache between requests or datasets.
+
+FastAPI validates the additional fields with `QuestionResponse`. Streamlit
+stores them with each assistant message and uses `st.code()` and `st.dataframe()`
+for both new answers and chat history. Empty successful results retain columns
+and display an empty table. Existing request formats and `answer` are unchanged;
+clients must tolerate the three additional response fields. Older answer-only
+responses and chat messages still display normally.
+
+`sql` is the actual SQL sent to DuckDB, including the outer `LIMIT 100`, rather
+than the model's original SQL text. Structured output has its own 10,000-character
+JSON budget for `sql`, `columns`, and `rows` (measured with Python `json.dumps`,
+`ensure_ascii=False`); complete trailing rows are removed to fit. A large cell
+can therefore leave an empty table. If SQL and column metadata alone exceed the
+budget, no structured result is exposed. There is no extra truncation field;
+the table may be a prefix of the fetched results. The existing text limit and
+truncation notice are preserved independently.
+
+NumPy scalars become Python values, dates/times/timestamps and durations become
+ISO strings, and missing values (including masked nested array values), NaN and
+infinities become JSON `null`. Decimal objects and uncommon object values become
+strings. DuckDB's `fetchdf()` may already convert DECIMAL values to floats; this
+does not provide exact arbitrary-precision decimal transport. Large integers
+remain JSON numbers and may exceed JavaScript's exact integer range. The caps
+bound returned data, not query execution or serialization memory usage.
 
 Uploads are saved under `uploads/` with server-generated UUID filenames. This
 directory is ignored by Git. Uploaded files persist on disk until removed;
@@ -167,10 +233,21 @@ Run all offline tests from the repository root:
 .\.venv\Scripts\python.exe -m pip check
 ```
 
+If the existing `.pytest_tmp` belongs to another Windows account, use a fresh
+temporary directory rather than changing its permissions:
+
+```powershell
+$testTemp = Join-Path $env:TEMP ("analyst-tests-" + [guid]::NewGuid().ToString("N"))
+.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider --basetemp $testTemp
+```
+
 Tests exercise SQL validation and execution, file-path resolution without API
 credentials, concurrent database access, row/text limits, model failures,
 tool-error recovery, recursion limits, dataset isolation, per-request tool binding,
-connection cleanup, and evaluation matching. Pytest collects `tests/` by default.
+connection cleanup, and evaluation matching. Structured-result tests also cover
+JSON types, empty/multiple-column results, multiple and parallel SQL calls,
+failed-call clearing, concurrent API requests across the same/different datasets,
+upload/ask compatibility, and Streamlit display/history. Pytest collects `tests/` by default.
 Model calls in
 tests are mocked; tests do not validate real OpenAI connectivity or model quality.
 

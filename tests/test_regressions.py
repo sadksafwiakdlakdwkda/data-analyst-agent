@@ -9,6 +9,7 @@ import time
 from unittest.mock import Mock
 
 import pytest
+import pandas as pd
 from langchain_core.messages import AIMessage, ToolMessage
 
 import agent as app
@@ -117,7 +118,7 @@ def test_database_failures_are_bounded(tool, args, prefix):
     assert len(result) == app.MAX_OUTPUT_CHARS
     # A later call must still work after the failed operation released its lock.
     connection.execute.side_effect = None
-    connection.execute.return_value.fetchdf.return_value.to_string.return_value = "recovered"
+    connection.execute.return_value.fetchdf.return_value = pd.DataFrame({"value": ["recovered"]})
     connection.execute.return_value.fetchone.return_value = (5,)
     assert "recovered" in tools[tool].invoke(args)
 

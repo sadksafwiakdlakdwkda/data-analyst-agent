@@ -6,3 +6,8 @@ langchain-core==1.6.13
 langchain-openai==1.7.2
 langgraph==1.2.16
 langgraph-prebuilt==1.1.1
+fastapi==0.161.0
+python-multipart==0.0.32
+uvicorn==0.54.0
+streamlit==1.66.1
+requests==2.34.2

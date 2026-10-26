@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel, Field
 from pathlib import Path
 from uuid import uuid4, UUID
+from typing import Any
 from agent import run_dataset_agent
 import duckdb
 
@@ -51,6 +52,9 @@ class QuestionRequest(BaseModel):
 
 class QuestionResponse(BaseModel):
     answer: str
+    sql: str | None = None
+    columns: list[str] = Field(default_factory=list)
+    rows: list[list[Any]] = Field(default_factory=list)
 
 
 @app.get("/health")
@@ -75,7 +79,12 @@ def ask(request: QuestionRequest):
 
     answer = str(result["messages"][-1].content)
 
-    return QuestionResponse(answer=answer)
+    return QuestionResponse(
+        answer=answer,
+        sql=result.get("sql"),
+        columns=result.get("columns", []),
+        rows=result.get("rows", []),
+    )
 @app.post("/upload")
 async def upload_csv(file: UploadFile = File(...)):
 
