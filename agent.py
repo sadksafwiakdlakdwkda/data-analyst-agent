@@ -5,6 +5,7 @@ import math
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from threading import Lock
+from typing import Annotated, Literal
 
 import duckdb
 import numpy as np
@@ -15,9 +16,10 @@ from sqlglot import exp, parse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+from pydantic import Field
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, MessagesState, StateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import InjectedState, ToolNode, tools_condition
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CSV_PATH = PROJECT_DIR / "sales.csv"
@@ -30,6 +32,11 @@ SYSTEM_PROMPT = (
     "Always inspect the dataset before generating SQL. "
     "Only query the sales table. "
     "Use execute_sql for calculations. "
+    "When the user asks for a chart, use create_chart after execute_sql completes. "
+    "Never call execute_sql and create_chart in the same tool-call batch. "
+    "Charts use only the latest returned SQL rows; aggregate and order in SQL first. "
+    "Use bar for category comparisons, line for ordered trends, scatter for numeric relationships. "
+    "Do not create charts unless useful or requested. "
     "If SQL fails, inspect the error message and correct the query before retrying. "
     "Never repeat the exact same failed SQL. "
     "Never invent query results. "
@@ -130,6 +137,7 @@ def structured_result(frame: pd.DataFrame, sql: str) -> dict | None:
     result = {
         "sql": sql,
         "columns": [str(column) for column in frame.columns],
+        "result_truncated": len(frame) >= MAX_RESULT_ROWS,
         "rows": [
             [json_value(value) for value in row]
             for row in frame.itertuples(index=False, name=None)
@@ -140,6 +148,7 @@ def structured_result(frame: pd.DataFrame, sql: str) -> dict | None:
             # Even the SQL/column metadata cannot fit the output budget.
             return None
         result["rows"].pop()
+        result["result_truncated"] = True
     return result
 
 
@@ -151,6 +160,58 @@ def latest_query_result(messages) -> dict:
                 return message.artifact
             break
     return {"sql": None, "columns": [], "rows": []}
+
+
+def latest_chart(messages) -> dict | None:
+    """A new SQL call invalidates any chart; the last chart call wins."""
+    for message in reversed(messages):
+        if not isinstance(message, ToolMessage):
+            continue
+        if message.name == "execute_sql":
+            return None
+        if message.name == "create_chart":
+            return message.artifact if message.status != "error" else None
+    return None
+
+
+@tool(response_format="content_and_artifact")
+def create_chart(
+    chart_type: Literal["bar", "line", "scatter"],
+    x: str,
+    y: str,
+    state: Annotated[dict, InjectedState],
+    title: Annotated[str | None, Field(max_length=200)] = None,
+) -> tuple[str, dict | None]:
+    """Create one chart from the latest completed SQL result. Run SQL separately first.
+
+    Use exact column names. Bar/line require numeric y; scatter requires numeric
+    x and y. Rows with null axes are excluded. SQL must do aggregation/ordering.
+    """
+    messages = state["messages"]
+    batch = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+    if batch and any(call["name"] == "execute_sql" for call in batch.tool_calls):
+        return "Chart Error: Run execute_sql in a separate batch before create_chart.", None
+    result = latest_query_result(messages)
+    if result["sql"] is None:
+        return "Chart Error: No valid SQL result. Execute a query first.", None
+    columns = result["columns"]
+    if columns.count(x) != 1 or columns.count(y) != 1:
+        return "Chart Error: Axis names must each identify exactly one result column.", None
+    xi, yi = columns.index(x), columns.index(y)
+    rows = [row for row in result["rows"] if row[xi] is not None and row[yi] is not None]
+    if not rows:
+        return "Chart Error: No plottable rows; both axes need non-null values.", None
+    if any(type(row[yi]) not in (int, float) for row in rows):
+        return "Chart Error: The y axis must contain numeric values, excluding booleans.", None
+    if chart_type == "scatter":
+        if any(type(row[xi]) not in (int, float) for row in rows):
+            return "Chart Error: Scatter x must contain numeric values, excluding booleans.", None
+    elif any(not isinstance(row[xi], (str, int, float, bool)) for row in rows):
+        return "Chart Error: The x axis must contain scalar values.", None
+    chart = {"type": chart_type, "x": x, "y": y, "title": title}
+    skipped = len(result["rows"]) - len(rows)
+    notice = " Result may be partial because output limits were reached." if result.get("result_truncated") else ""
+    return f"Created {chart_type} chart with {len(rows)} rows; excluded {skipped} null-axis rows.{notice}", chart
 
 
 def create_tools(connection: duckdb.DuckDBPyConnection):
@@ -243,6 +304,7 @@ def after_tools(state: MessagesState):
                     "SQL Execution Error:",
                     "Dataset Inspection Error:",
                     "Tool Error:",
+                    "Chart Error:",
                 )
             )
         )
@@ -272,6 +334,7 @@ def handle_tool_error(error: Exception) -> str:
 
 def create_agent_graph(dataset_tools):
     """Compile a graph whose LLM and ToolNode use the same request tools."""
+    dataset_tools = [*dataset_tools, create_chart.model_copy()]
     model = get_models()
     model_with_tools = model.bind_tools(dataset_tools)
 
@@ -342,7 +405,12 @@ def run_agent(
                     )
                 ]
             }
-        return {**result, **latest_query_result(result["messages"])}
+        query = latest_query_result(result["messages"])
+        return {
+            **result, **query,
+            "result_truncated": query.get("result_truncated", False),
+            "chart": latest_chart(result["messages"]),
+        }
     finally:
         connection.close()
 

@@ -9,6 +9,7 @@ local FastAPI service for uploading datasets and asking questions.
 - Answers natural-language questions about the included `sales.csv` or another CSV.
 - Creates an independent in-memory database, tool set, and graph for each run.
 - Builds two tools per dataset: `inspect_dataset()` and `execute_sql(query: str)`.
+- Adds a state-injected `create_chart` tool to each graph for bar, line and scatter charts.
 - Validates SQL before execution and generates the executed query from that AST.
 - Returns at most 100 SQL result rows and 10,000 characters per tool response.
   Longer text includes a truncation notice; refine the query when this happens.
@@ -155,7 +156,9 @@ Open `http://127.0.0.1:8000/docs` to try the endpoints:
     "answer": "Total revenue is 52000.",
     "sql": "SELECT * FROM (SELECT SUM(revenue) AS total FROM sales) AS limited_result LIMIT 100",
     "columns": ["total"],
-    "rows": [[52000]]
+    "rows": [[52000]],
+    "result_truncated": false,
+    "chart": null
   }
   ```
 
@@ -172,7 +175,7 @@ Open `http://localhost:8501`, upload `sales.csv`, click **Load Dataset**, and as
 "Which brand has the highest total revenue?". Check the answer, SQL block and
 table, then ask another question to confirm previous tables remain in chat.
 For an API-only check, upload `sales.csv` using `/docs`, copy its `dataset_id`
-into `/ask`, and inspect the four response fields. Ask for a filter that matches
+into `/ask`, and inspect the response fields. Ask for a filter that matches
 no rows to verify that a successful empty table still displays its column names.
 
 ### Structured result flow and policy
@@ -199,16 +202,19 @@ FastAPI validates the additional fields with `QuestionResponse`. Streamlit
 stores them with each assistant message and uses `st.code()` and `st.dataframe()`
 for both new answers and chat history. Empty successful results retain columns
 and display an empty table. Existing request formats and `answer` are unchanged;
-clients must tolerate the three additional response fields. Older answer-only
+clients must tolerate the additional response fields. Older answer-only
 responses and chat messages still display normally.
 
 `sql` is the actual SQL sent to DuckDB, including the outer `LIMIT 100`, rather
 than the model's original SQL text. Structured output has its own 10,000-character
-JSON budget for `sql`, `columns`, and `rows` (measured with Python `json.dumps`,
+JSON budget for `sql`, `columns`, `rows`, and `result_truncated` (measured with Python `json.dumps`,
 `ensure_ascii=False`); complete trailing rows are removed to fit. A large cell
 can therefore leave an empty table. If SQL and column metadata alone exceed the
-budget, no structured result is exposed. There is no extra truncation field;
-the table may be a prefix of the fetched results. The existing text limit and
+budget, no structured result is exposed. `result_truncated` is true when complete
+rows were removed for the size budget or the fetched frame reaches 100 rows.
+The latter is conservative: exactly 100 rows might also be the complete result.
+No extra count query is executed. Streamlit warns that the result may be partial;
+the table and chart use the same returned rows. The existing text limit and
 truncation notice are preserved independently.
 
 NumPy scalars become Python values, dates/times/timestamps and durations become
@@ -218,6 +224,61 @@ strings. DuckDB's `fetchdf()` may already convert DECIMAL values to floats; this
 does not provide exact arbitrary-precision decimal transport. Large integers
 remain JSON numbers and may exceed JavaScript's exact integer range. The caps
 bound returned data, not query execution or serialization memory usage.
+
+### Chart tool
+
+Ask "Show total revenue by brand as a bar chart." The model should inspect the
+dataset, execute an aggregate query, then call:
+
+```python
+create_chart(chart_type="bar", x="brand", y="total_revenue", title="Revenue by brand")
+```
+
+The tool accepts only `bar`, `line`, or `scatter`, two exact unambiguous column
+names, and an optional title of at most 200 characters. It reads the most recent
+completed SQL artifact through LangGraph `InjectedState`; state and data are not
+model-supplied arguments. Ordinary questions do not require charts. Bar/line
+require numeric Y values; scatter requires numeric X and Y values. Booleans do
+not count as numeric. Bar/line X values must be scalar; ISO date strings work as
+ordered category labels. Rows with a null axis are excluded only from the chart,
+with a count in tool feedback and a frontend caption. Empty results, entirely
+null axes, invalid columns/types and unsupported charts produce tool errors,
+which count toward the existing two-error budget. Query tables remain intact.
+
+SQL and charts must be called in separate model tool batches. If they appear in
+one batch, chart creation returns a recoverable error, even if an earlier SQL
+result exists. A later chart call can use the newly completed query. Any new SQL
+call invalidates an earlier chart, including failed/invalid SQL calls. Multiple
+chart calls use the last call in message order; a failed last chart call clears
+the chart. Inspection calls do not invalidate charts. On recursion-limit
+termination no chart is exposed. There is no mutable global query/chart cache.
+`create_tools(connection)` still returns the two dataset tools; `create_agent_graph`
+adds a separate instance of the state-injected chart tool to each graph.
+
+`/ask` adds `chart` (null when absent/invalid) and `result_truncated` (false by
+default). A chart references the same response's columns and rows; it never
+duplicates data or executes another query:
+
+```json
+{
+  "answer": "Toyota has the highest total revenue.",
+  "sql": "SELECT * FROM (SELECT brand, SUM(revenue) AS total_revenue FROM sales GROUP BY brand ORDER BY total_revenue DESC) AS limited_result LIMIT 100",
+  "columns": ["brand", "total_revenue"],
+  "rows": [["Toyota", 36500], ["Honda", 15500]],
+  "result_truncated": false,
+  "chart": {"type": "bar", "x": "brand", "y": "total_revenue", "title": "Revenue by brand"}
+}
+```
+
+Streamlit displays one chart after the answer, SQL and table, and retains it in
+chat history. It uses its built-in `st.vega_lite_chart` with a fixed specification
+and field aliases, preserving input order without aggregation, stacking or axis
+sorting. SQL must do any necessary grouping and ordering; duplicate categories
+can overlap. Charts only cover returned rows and do not fetch full data. Loading
+a new dataset clears the existing chat and charts. Old responses/messages without
+the new fields still render normally. No plotting dependency or generated code
+execution was added. Multi-series charts, pie charts, dual axes and image export
+are outside this version's scope.
 
 Uploads are saved under `uploads/` with server-generated UUID filenames. This
 directory is ignored by Git. Uploaded files persist on disk until removed;
@@ -247,7 +308,10 @@ tool-error recovery, recursion limits, dataset isolation, per-request tool bindi
 connection cleanup, and evaluation matching. Structured-result tests also cover
 JSON types, empty/multiple-column results, multiple and parallel SQL calls,
 failed-call clearing, concurrent API requests across the same/different datasets,
-upload/ask compatibility, and Streamlit display/history. Pytest collects `tests/` by default.
+upload/ask compatibility, and Streamlit display/history. Chart tests cover all
+three types, validation, null filtering, SQL/chart batch dependencies, invalidation,
+retries, tool error limits, hidden state injection, concurrent API requests,
+truncation warnings and Streamlit chart data/order/history. Pytest collects `tests/` by default.
 Model calls in
 tests are mocked; tests do not validate real OpenAI connectivity or model quality.
 

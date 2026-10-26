@@ -9,7 +9,42 @@ def display_message(message):
     st.write(message["content"])
     if message.get("sql") is not None and message.get("columns"):
         st.code(message["sql"], language="sql")
-        st.dataframe(pd.DataFrame(message["rows"], columns=message["columns"]))
+        frame = pd.DataFrame(message["rows"], columns=message["columns"])
+        st.dataframe(frame)
+        if message.get("result_truncated"):
+            st.warning("Output limits reached: showing only part of the query result, or a result that may be incomplete.")
+        chart = message.get("chart")
+        if chart:
+            display_chart(frame, chart)
+
+
+def display_chart(frame, chart):
+    x, y = chart["x"], chart["y"]
+    plotted = frame.dropna(subset=[x, y])
+    if plotted.empty:
+        return
+    if chart.get("title"):
+        st.subheader(chart["title"])
+    skipped = len(frame) - len(plotted)
+    if skipped:
+        st.caption(f"Excluded {skipped} rows with missing axis values.")
+    # Fixed aliases safely handle SQL column names containing dots/brackets.
+    data = pd.DataFrame({
+        "axis_x": plotted[x].tolist(), "axis_y": plotted[y].tolist(),
+        "row_order": range(len(plotted)),
+    })
+    numeric_x = all(type(value) in (int, float) for value in data["axis_x"].tolist())
+    encoding = {
+        "x": {"field": "axis_x", "type": "quantitative" if numeric_x else "nominal", "title": x, "sort": None},
+        "y": {"field": "axis_y", "type": "quantitative", "title": y, "stack": None},
+        "tooltip": [{"field": "axis_x", "title": x}, {"field": "axis_y", "title": y}],
+    }
+    if chart["type"] == "line":
+        encoding["order"] = {"field": "row_order", "type": "quantitative"}
+    st.vega_lite_chart(data, {
+        "mark": {"bar": "bar", "line": "line", "scatter": "point"}[chart["type"]],
+        "encoding": encoding,
+    })
 
 
 st.set_page_config(
@@ -120,6 +155,8 @@ else:
                     "sql": data.get("sql"),
                     "columns": data.get("columns", []),
                     "rows": data.get("rows", []),
+                    "result_truncated": data.get("result_truncated", False),
+                    "chart": data.get("chart"),
                 }
                 display_message(message)
 
