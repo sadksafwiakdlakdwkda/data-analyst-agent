@@ -12,13 +12,13 @@ import agent
 from test_structured_results import client, mock_model, sql_call, upload
 
 
-def chart_call(kind="bar", x="brand", y="total", title="Revenue", call_id="chart", **extra):
+def chart_call(kind="bar", x="product", y="total", title="Revenue", call_id="chart", **extra):
     return {"name": "create_chart", "args": {
         "chart_type": kind, "x": x, "y": y, "title": title, **extra,
     }, "id": call_id}
 
 
-QUERY = "SELECT brand, SUM(revenue) AS total FROM sales GROUP BY brand ORDER BY total DESC"
+QUERY = "SELECT product, ROUND(SUM(revenue), 2) AS total FROM sales GROUP BY product ORDER BY total DESC"
 
 
 def chart_messages(result):
@@ -26,7 +26,7 @@ def chart_messages(result):
 
 
 @pytest.mark.parametrize("kind,query,x", [
-    ("bar", QUERY, "brand"),
+    ("bar", QUERY, "product"),
     ("line", "SELECT revenue AS x, revenue AS total FROM sales ORDER BY revenue DESC", "x"),
     ("scatter", "SELECT revenue AS x, revenue AS total FROM sales", "x"),
 ])
@@ -39,7 +39,12 @@ def test_chart_types_reuse_sql_without_execution(monkeypatch, dataset_connection
     assert chart_messages(result)[0].content.startswith(f"Created {kind}")
     connection.execute.assert_called_once()
     if kind == "bar":
-        assert result["rows"] == [["Toyota", 36500], ["Honda", 15500]]
+        assert result["rows"] == [
+            ["Aurora Lamp", 1469425.71], ["Pebble Speaker", 1244861.83],
+            ["Tide Mug", 1002624.54], ["Cedar Shelf", 968397.46],
+            ["Meadow Chair", 760067.57], ["Linen Throw", 715744.29],
+            ["Glow Bulb", 493853.17], ["Drift Clock", 484099.99],
+        ]
 
 
 def test_chart_state_is_hidden_from_model():
@@ -52,13 +57,13 @@ def test_chart_state_is_hidden_from_model():
     (QUERY, chart_call(x="missing")),
     (QUERY, chart_call(y="missing")),
     (QUERY, chart_call("scatter")),
-    ("SELECT brand, brand AS total FROM sales", chart_call()),
-    ("SELECT brand, TRUE AS total FROM sales", chart_call()),
+    ("SELECT product, product AS total FROM sales", chart_call()),
+    ("SELECT product, TRUE AS total FROM sales", chart_call()),
     ("SELECT TRUE AS x, revenue AS total FROM sales", chart_call("scatter", "x")),
     ("SELECT [1, 2] AS x, revenue AS total FROM sales", chart_call("bar", "x")),
-    ("SELECT brand, revenue AS total FROM sales WHERE FALSE", chart_call()),
-    ("SELECT NULL AS brand, revenue AS total FROM sales", chart_call()),
-    ("SELECT brand, NULL AS total FROM sales", chart_call()),
+    ("SELECT product, revenue AS total FROM sales WHERE FALSE", chart_call()),
+    ("SELECT NULL AS product, revenue AS total FROM sales", chart_call()),
+    ("SELECT product, NULL AS total FROM sales", chart_call()),
     (QUERY, chart_call(title="x" * 201)),
     (QUERY, {"name": "create_chart", "args": {}, "id": "invalid"}),
 ])
@@ -82,11 +87,11 @@ def test_no_valid_sql_cannot_chart(monkeypatch, query):
 
 
 def test_null_axis_rows_are_excluded_without_changing_table(monkeypatch):
-    query = "SELECT brand, CASE WHEN revenue = 15000 THEN NULL ELSE revenue END AS total FROM sales"
+    query = "SELECT product, CASE WHEN revenue = 124.77 THEN NULL ELSE revenue END AS total FROM sales ORDER BY date, region, product, channel LIMIT 10"
     mock_model(monkeypatch, [[sql_call(query)], [chart_call()]])
     result = agent.run_agent("Chart")
     assert result["chart"] is not None
-    assert len(result["rows"]) == 5
+    assert len(result["rows"]) == 10
     assert "excluded 1 null-axis rows" in chart_messages(result)[0].content
 
 
@@ -123,7 +128,7 @@ def test_sql_and_chart_in_same_batch_rejected_even_with_previous_result(monkeypa
 
 def test_chart_retry_after_batch_error_uses_new_query(monkeypatch):
     mock_model(monkeypatch, [
-        [sql_call("SELECT 1 AS brand, 2 AS total"), chart_call()],
+        [sql_call("SELECT 1 AS product, 2 AS total"), chart_call()],
         [chart_call()],
     ])
     result = agent.run_agent("Chart")
@@ -156,20 +161,25 @@ def test_model_cannot_override_injected_chart_state(monkeypatch):
     mock_model(monkeypatch, [[sql_call(QUERY)], [chart_call(state=fake_state)]])
     result = agent.run_agent("Chart")
     assert result["chart"] is not None
-    assert result["rows"] == [["Toyota", 36500], ["Honda", 15500]]
+    assert result["rows"] == [
+            ["Aurora Lamp", 1469425.71], ["Pebble Speaker", 1244861.83],
+            ["Tide Mug", 1002624.54], ["Cedar Shelf", 968397.46],
+            ["Meadow Chair", 760067.57], ["Linen Throw", 715744.29],
+            ["Glow Bulb", 493853.17], ["Drift Clock", 484099.99],
+        ]
 
 
 @pytest.mark.parametrize("query,expected", [
     (QUERY, False),
-    ("SELECT a.brand, a.revenue AS total FROM sales a CROSS JOIN sales b CROSS JOIN sales c", True),
-    ("SELECT repeat('x', 3000) AS brand, revenue AS total FROM sales", True),
+    ("SELECT product, revenue AS total FROM sales", True),
+    ("SELECT repeat('x', 3000) AS product, revenue AS total FROM sales", True),
 ])
 def test_chart_truncation_status(client, monkeypatch, query, expected):
     mock_model(monkeypatch, [[sql_call(query)], [chart_call()]])
     response = client.post("/ask", json={"question": "Chart", "dataset_id": upload(client, agent.CSV_PATH.read_text())})
     assert response.status_code == 200
     data = response.json()
-    assert data["chart"] == {"type": "bar", "x": "brand", "y": "total", "title": "Revenue"}
+    assert data["chart"] == {"type": "bar", "x": "product", "y": "total", "title": "Revenue"}
     assert data["result_truncated"] is expected
     assert len(data["rows"]) <= 100
 
@@ -186,13 +196,13 @@ def test_concurrent_chart_requests_are_isolated(client, monkeypatch):
                 barrier.wait(timeout=15)
                 question = next(m.content for m in messages if m.type == "human")
                 return AIMessage(content="", tool_calls=[chart_call("scatter" if question == "fail" else "bar", title=question)])
-            return AIMessage(content="", tool_calls=[sql_call("SELECT brand, revenue AS total FROM sales")])
+            return AIMessage(content="", tool_calls=[sql_call("SELECT product, revenue AS total FROM sales")])
 
     model = Mock()
     model.bind_tools.side_effect = lambda _: BoundModel()
     monkeypatch.setattr(agent, "get_models", lambda: model)
-    first = upload(client, "brand,revenue\nFirst,11\n")
-    second = upload(client, "brand,revenue\nSecond,73\n")
+    first = upload(client, "product,revenue\nFirst,11\n")
+    second = upload(client, "product,revenue\nSecond,73\n")
     inputs = [(first, "One"), (second, "Two"), (first, "fail"), (first, "Four")]
 
     def ask(item):
@@ -249,7 +259,7 @@ def test_streamlit_failed_chart_still_displays_answer_and_table():
     ui.session_state["dataset_id"] = "test"
     ui.session_state["messages"] = [{
         "role": "assistant", "content": "Cannot chart", "sql": "SELECT ...",
-        "columns": ["brand"], "rows": [["Toyota"]], "chart": None,
+        "columns": ["product"], "rows": [["Toyota"]], "chart": None,
     }]
     ui.run()
     assert not ui.exception

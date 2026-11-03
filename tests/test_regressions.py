@@ -36,8 +36,8 @@ with patch('dotenv.load_dotenv', side_effect=AssertionError('eager dotenv')), \\
     assert agent._model is None
     with agent.create_dataset_connection(agent.CSV_PATH) as connection:
         tools = {tool.name: tool for tool in agent.create_tools(connection)}
-        assert 'Total rows: 5' in tools['inspect_dataset'].invoke({})
-        assert '52000' in tools['execute_sql'].invoke({'query': 'SELECT SUM(revenue) FROM sales'})
+        assert 'Total rows: 10000' in tools['inspect_dataset'].invoke({})
+        assert '7139074.56' in tools['execute_sql'].invoke({'query': 'SELECT SUM(revenue) FROM sales'})
 """
     result = subprocess.run(
         [sys.executable, "-B", "-c", script], cwd=tmp_path, env=env,
@@ -69,14 +69,14 @@ def test_models_initialized_once_on_first_use(monkeypatch):
 def test_sql_is_generated_from_ast(query, execute_sql):
     result = execute_sql.invoke({"query": query})
     assert not result.startswith("SQL ")
-    assert "52000" in result
+    assert "7139074.56" in result
 
 
 @pytest.mark.parametrize("query", [
     "", "-- comment only", "SELECT (", "SELECT * FROM main.sales",
     "SELECT * FROM memory.main.sales", "SELECT * FROM (SELECT * FROM sales)",
     "WITH x AS (SELECT * FROM sales) SELECT * FROM sales",
-    "SELECT brand FROM sales UNION SELECT brand FROM sales",
+    "SELECT product FROM sales UNION SELECT product FROM sales",
     "SELECT * FROM read_text('sales.csv')",
     "SELECT * FROM read_parquet('sales.parquet')",
     "SELECT * FROM glob('*')", "SELECT getenv('PATH')",
@@ -92,7 +92,7 @@ def test_rejected_sql_never_reaches_database(query):
 
 def test_row_limit(execute_sql):
     result = execute_sql.invoke({
-        "query": "SELECT a.revenue FROM sales a CROSS JOIN sales b CROSS JOIN sales c"
+        "query": "SELECT revenue FROM sales"
     })
     assert len(result.splitlines()) == app.MAX_RESULT_ROWS + 1
 
@@ -149,7 +149,7 @@ def test_shared_connection_lock_covers_execute_and_fetch(monkeypatch, dataset_co
 
     def run(index):
         if index % 3 == 0:
-            assert "Total rows: 5" in inspect_dataset.invoke({})
+            assert "Total rows: 10000" in inspect_dataset.invoke({})
         else:
             result = execute_sql.invoke({"query": f"SELECT {1000 + index} AS marker"})
             assert result.split() == ["marker", str(1000 + index)]
@@ -177,10 +177,10 @@ def test_graph_success(models):
     bound.invoke.side_effect = [
         tool_call("inspect_dataset", {}, "inspect"),
         tool_call(args={"query": "SELECT SUM(revenue) AS total FROM sales"}, call_id="sql"),
-        AIMessage(content="The total is 52000."),
+        AIMessage(content="The total is 7139074.56."),
     ]
     result = app.run_agent("Total revenue?")
-    assert result["messages"][-1].content == "The total is 52000."
+    assert result["messages"][-1].content == "The total is 7139074.56."
     assert not any(
         isinstance(message, ToolMessage) and str(message.content).startswith("SQL ")
         for message in result["messages"]
@@ -193,10 +193,10 @@ def test_graph_recovers_after_one_sql_error(models):
     bound.invoke.side_effect = [
         tool_call(call_id="bad"),
         tool_call(args={"query": "SELECT SUM(revenue) FROM sales"}, call_id="good"),
-        AIMessage(content="52000"),
+        AIMessage(content="7139074.56"),
     ]
     result = app.run_agent("Total revenue?")
-    assert result["messages"][-1].content == "52000"
+    assert result["messages"][-1].content == "7139074.56"
     assert sum(
         isinstance(message, ToolMessage)
         and str(message.content).startswith("SQL Execution Error:")

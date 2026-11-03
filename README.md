@@ -285,6 +285,42 @@ directory is ignored by Git. Uploaded files persist on disk until removed;
 the per-analysis in-memory connection is closed after each run. The API has no
 authentication or automatic upload cleanup and is intended for local use.
 
+## Docker
+
+Install Docker with Linux container support and Docker Compose. From the
+repository root, create `.env` from `.env.example` if needed and set
+`OPENAI_API_KEY`. The key is passed to the API at runtime; `.env` and local
+uploads are excluded from the image build context.
+
+```powershell
+docker compose up --build -d
+```
+
+Open `http://localhost:8501` for the Streamlit interface or
+`http://localhost:8001/docs` for the API. Compose runs the API and interface in
+separate containers built from the same Dockerfile. The interface uses
+`API_URL=http://api:8000`; outside Docker it defaults to
+`http://127.0.0.1:8000`. Both published ports are bound to the local computer.
+Docker publishes the API on host port 8001 to avoid conflicting with a local
+API running on port 8000; the container still listens on port 8000.
+The interface starts after the API health check passes. This check does not
+verify model credentials or OpenAI connectivity.
+
+```powershell
+docker compose logs -f
+docker compose down
+```
+
+Uploaded CSVs are stored in the Docker-managed `uploads` volume and survive
+container recreation and `docker compose down`. Existing files in the local
+`uploads/` directory are not imported; upload them through the interface again.
+`docker compose down -v` deletes the volume and its uploaded datasets.
+After source or dependency changes, run `docker compose up --build -d` again.
+
+The image uses Python 3.14 on Linux. The Windows environment documented above
+does not establish Linux compatibility; validate the container build and an
+upload/question flow on your Docker installation.
+
 ## Tests and evaluation
 
 Run all offline tests from the repository root:
