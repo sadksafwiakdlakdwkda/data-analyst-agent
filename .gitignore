@@ -36,5 +36,6 @@ dist/
 # Generated files
 outputs/
 uploads/
+evals/results/
 
 .pytest_tmp/

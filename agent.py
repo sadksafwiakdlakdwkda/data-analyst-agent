@@ -218,18 +218,19 @@ def create_tools(connection: duckdb.DuckDBPyConnection):
     """Build tools whose closures share only this dataset connection."""
     connection_lock = Lock()
 
-    @tool
-    def inspect_dataset() -> str:
+    @tool(response_format="content_and_artifact")
+    def inspect_dataset() -> tuple[str, dict | None]:
         """Return the schema and row count of the sales dataset."""
         try:
             with connection_lock:
                 schema = connection.execute("DESCRIBE sales").fetchdf()
                 count = connection.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
-            return limit_output(
-                f"Schema:\n{schema.to_string(index=False)}\n\nTotal rows: {count}"
+            return (
+                limit_output(f"Schema:\n{schema.to_string(index=False)}\n\nTotal rows: {count}"),
+                {"row_count": count},
             )
         except Exception as error:
-            return limit_output(f"Dataset Inspection Error: {error}")
+            return limit_output(f"Dataset Inspection Error: {error}"), None
 
     @tool(response_format="content_and_artifact")
     def execute_sql(query: str) -> tuple[str, dict | None]:

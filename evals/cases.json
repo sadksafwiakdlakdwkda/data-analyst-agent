@@ -1,0 +1,1349 @@
+{
+  "version": 2,
+  "dataset": "sales.csv",
+  "dataset_sha256": "2eeb99d30d46803911c2253998219cbd8cb22dd568e45e0944f71a6322d3d71b",
+  "cases": [
+    {
+      "id": "basic_001",
+      "category": "basic",
+      "question": "What is the total revenue? Return a single value.",
+      "reference_sql": "SELECT ROUND(SUM(revenue), 2) AS total_revenue FROM sales",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          7139074.56
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "basic_002",
+      "allowed_evidence": ["sql", "inspect_row_count"],
+      "category": "basic",
+      "question": "How many sales records are there?",
+      "reference_sql": "SELECT COUNT(*) AS record_count FROM sales",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "record_count"
+      ],
+      "expected_rows": [
+        [
+          10000
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "basic_003",
+      "category": "basic",
+      "question": "How many distinct products are there?",
+      "reference_sql": "SELECT COUNT(DISTINCT product) AS product_count FROM sales",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "product_count"
+      ],
+      "expected_rows": [
+        [
+          8
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "basic_004",
+      "category": "basic",
+      "question": "How many distinct regions are there?",
+      "reference_sql": "SELECT COUNT(DISTINCT region) AS region_count FROM sales",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "region_count"
+      ],
+      "expected_rows": [
+        [
+          5
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "basic_005",
+      "category": "basic",
+      "question": "How many distinct sales channels are there?",
+      "reference_sql": "SELECT COUNT(DISTINCT channel) AS channel_count FROM sales",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "channel_count"
+      ],
+      "expected_rows": [
+        [
+          3
+        ]
+      ],
+      "split": "test"
+    },
+    {
+      "id": "basic_006",
+      "category": "basic",
+      "question": "What is the total number of units sold?",
+      "reference_sql": "SELECT SUM(units) AS total_units FROM sales",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "total_units"
+      ],
+      "expected_rows": [
+        [
+          65282
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "basic_007",
+      "category": "basic",
+      "question": "What is the average revenue per sales record, rounded to two decimals?",
+      "reference_sql": "SELECT ROUND(AVG(revenue), 2) AS average_revenue FROM sales",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "average_revenue"
+      ],
+      "expected_rows": [
+        [
+          713.91
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "basic_008",
+      "category": "basic",
+      "question": "What is the total revenue in North?",
+      "reference_sql": "SELECT ROUND(SUM(revenue), 2) AS total_revenue FROM sales WHERE region = 'North'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          2017576.39
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "basic_009",
+      "category": "basic",
+      "question": "Which product has the highest total revenue? Return only its name.",
+      "reference_sql": "SELECT product FROM sales GROUP BY product ORDER BY SUM(revenue) DESC LIMIT 1",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "product"
+      ],
+      "expected_rows": [
+        [
+          "Aurora Lamp"
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "basic_010",
+      "category": "basic",
+      "question": "Which region has the highest total revenue? Return only its name.",
+      "reference_sql": "SELECT region FROM sales GROUP BY region ORDER BY SUM(revenue) DESC LIMIT 1",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "region"
+      ],
+      "expected_rows": [
+        [
+          "North"
+        ]
+      ],
+      "split": "test"
+    },
+    {
+      "id": "compound_001",
+      "category": "compound",
+      "question": "Show total revenue by product, rounded to two decimals, highest first.",
+      "reference_sql": "SELECT product, ROUND(SUM(revenue), 2) AS total_revenue FROM sales GROUP BY product ORDER BY total_revenue DESC",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "product",
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          "Aurora Lamp",
+          1469425.71
+        ],
+        [
+          "Pebble Speaker",
+          1244861.83
+        ],
+        [
+          "Tide Mug",
+          1002624.54
+        ],
+        [
+          "Cedar Shelf",
+          968397.46
+        ],
+        [
+          "Meadow Chair",
+          760067.57
+        ],
+        [
+          "Linen Throw",
+          715744.29
+        ],
+        [
+          "Glow Bulb",
+          493853.17
+        ],
+        [
+          "Drift Clock",
+          484099.99
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "compound_002",
+      "category": "compound",
+      "question": "Show total revenue by region, rounded to two decimals, highest first.",
+      "reference_sql": "SELECT region, ROUND(SUM(revenue), 2) AS total_revenue FROM sales GROUP BY region ORDER BY total_revenue DESC",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "region",
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          "North",
+          2017576.39
+        ],
+        [
+          "East",
+          1712479.59
+        ],
+        [
+          "South",
+          1361776.82
+        ],
+        [
+          "West",
+          1352903.52
+        ],
+        [
+          "Central",
+          694338.24
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "compound_003",
+      "category": "compound",
+      "question": "Show total revenue by channel, rounded to two decimals, highest first.",
+      "reference_sql": "SELECT channel, ROUND(SUM(revenue), 2) AS total_revenue FROM sales GROUP BY channel ORDER BY total_revenue DESC",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "channel",
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          "Online",
+          3536245.75
+        ],
+        [
+          "Retail",
+          2148311.65
+        ],
+        [
+          "Partner",
+          1454517.16
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "compound_004",
+      "category": "compound",
+      "question": "What is the total revenue from the Online channel in 2025?",
+      "reference_sql": "SELECT ROUND(SUM(revenue), 2) AS total_revenue FROM sales WHERE channel = 'Online' AND date >= DATE '2025-01-01' AND date < DATE '2026-01-01'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          1760576.25
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "compound_005",
+      "category": "compound",
+      "question": "List the top three products by Online revenue in 2025. Include product and total revenue rounded to two decimals, highest first.",
+      "reference_sql": "SELECT product, ROUND(SUM(revenue), 2) AS total_revenue FROM sales WHERE channel = 'Online' AND date >= DATE '2025-01-01' AND date < DATE '2026-01-01' GROUP BY product ORDER BY total_revenue DESC LIMIT 3",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "product",
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          "Aurora Lamp",
+          371689.52
+        ],
+        [
+          "Pebble Speaker",
+          303845.92
+        ],
+        [
+          "Tide Mug",
+          257886.75
+        ]
+      ],
+      "split": "test"
+    },
+    {
+      "id": "compound_006",
+      "category": "compound",
+      "question": "What is North Online total revenue?",
+      "reference_sql": "SELECT ROUND(SUM(revenue), 2) AS total_revenue FROM sales WHERE region = 'North' AND channel = 'Online'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          1015243.46
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "compound_007",
+      "category": "compound",
+      "question": "How many Retail sales records are in East?",
+      "reference_sql": "SELECT COUNT(*) AS record_count FROM sales WHERE region = 'East' AND channel = 'Retail'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "record_count"
+      ],
+      "expected_rows": [
+        [
+          706
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "compound_008",
+      "category": "compound",
+      "question": "How many Aurora Lamp units were sold in North?",
+      "reference_sql": "SELECT SUM(units) AS total_units FROM sales WHERE region = 'North' AND product = 'Aurora Lamp'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "total_units"
+      ],
+      "expected_rows": [
+        [
+          3721
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "compound_009",
+      "category": "compound",
+      "question": "Show total units by product, most units first.",
+      "reference_sql": "SELECT product, SUM(units) AS total_units FROM sales GROUP BY product ORDER BY total_units DESC",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "product",
+        "total_units"
+      ],
+      "expected_rows": [
+        [
+          "Aurora Lamp",
+          13476
+        ],
+        [
+          "Pebble Speaker",
+          11265
+        ],
+        [
+          "Cedar Shelf",
+          9071
+        ],
+        [
+          "Tide Mug",
+          8969
+        ],
+        [
+          "Meadow Chair",
+          7012
+        ],
+        [
+          "Linen Throw",
+          6573
+        ],
+        [
+          "Glow Bulb",
+          4523
+        ],
+        [
+          "Drift Clock",
+          4393
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "compound_010",
+      "category": "compound",
+      "question": "Show average revenue per record by channel, rounded to two decimals. Order channels alphabetically.",
+      "reference_sql": "SELECT channel, ROUND(AVG(revenue), 2) AS average_revenue FROM sales GROUP BY channel ORDER BY channel",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "channel",
+        "average_revenue"
+      ],
+      "expected_rows": [
+        [
+          "Online",
+          704.85
+        ],
+        [
+          "Partner",
+          723.64
+        ],
+        [
+          "Retail",
+          722.61
+        ]
+      ],
+      "split": "test"
+    },
+    {
+      "id": "compound_011",
+      "category": "compound",
+      "question": "Show total revenue for every region and channel pair, rounded to two decimals. Order by region then channel alphabetically.",
+      "reference_sql": "SELECT region, channel, ROUND(SUM(revenue), 2) AS total_revenue FROM sales GROUP BY region, channel ORDER BY region, channel",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "region",
+        "channel",
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          "Central",
+          "Online",
+          330870.42
+        ],
+        [
+          "Central",
+          "Partner",
+          152137.86
+        ],
+        [
+          "Central",
+          "Retail",
+          211329.96
+        ],
+        [
+          "East",
+          "Online",
+          819248.33
+        ],
+        [
+          "East",
+          "Partner",
+          370003.04
+        ],
+        [
+          "East",
+          "Retail",
+          523228.22
+        ],
+        [
+          "North",
+          "Online",
+          1015243.46
+        ],
+        [
+          "North",
+          "Partner",
+          410450.5
+        ],
+        [
+          "North",
+          "Retail",
+          591882.43
+        ],
+        [
+          "South",
+          "Online",
+          690051.41
+        ],
+        [
+          "South",
+          "Partner",
+          263837.37
+        ],
+        [
+          "South",
+          "Retail",
+          407888.04
+        ],
+        [
+          "West",
+          "Online",
+          680832.13
+        ],
+        [
+          "West",
+          "Partner",
+          258088.39
+        ],
+        [
+          "West",
+          "Retail",
+          413983.0
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "compound_012",
+      "category": "compound",
+      "question": "Which product has the lowest total revenue? Return only its name.",
+      "reference_sql": "SELECT product FROM sales GROUP BY product ORDER BY SUM(revenue) ASC LIMIT 1",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "product"
+      ],
+      "expected_rows": [
+        [
+          "Drift Clock"
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "compound_013",
+      "category": "compound",
+      "question": "What is the total revenue for Aurora Lamp and Pebble Speaker combined?",
+      "reference_sql": "SELECT ROUND(SUM(revenue), 2) AS total_revenue FROM sales WHERE product IN ('Aurora Lamp', 'Pebble Speaker')",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          2714287.54
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "compound_014",
+      "category": "compound",
+      "question": "How many records have at least 10 units sold?",
+      "reference_sql": "SELECT COUNT(*) AS record_count FROM sales WHERE units >= 10",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "record_count"
+      ],
+      "expected_rows": [
+        [
+          2507
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "compound_015",
+      "category": "compound",
+      "question": "Show products with total revenue above 1000000, including total revenue rounded to two decimals, highest first.",
+      "reference_sql": "SELECT product, ROUND(SUM(revenue), 2) AS total_revenue FROM sales GROUP BY product HAVING SUM(revenue) > 1000000 ORDER BY total_revenue DESC",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "product",
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          "Aurora Lamp",
+          1469425.71
+        ],
+        [
+          "Pebble Speaker",
+          1244861.83
+        ],
+        [
+          "Tide Mug",
+          1002624.54
+        ]
+      ],
+      "split": "test"
+    },
+    {
+      "id": "time_001",
+      "category": "time",
+      "question": "What is the total revenue in 2024?",
+      "reference_sql": "SELECT ROUND(SUM(revenue), 2) AS total_revenue FROM sales WHERE date >= DATE '2024-01-01' AND date < DATE '2025-01-01'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          3587655.08
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "time_002",
+      "category": "time",
+      "question": "What is the total revenue in 2025?",
+      "reference_sql": "SELECT ROUND(SUM(revenue), 2) AS total_revenue FROM sales WHERE date >= DATE '2025-01-01' AND date < DATE '2026-01-01'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          3551419.48
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "time_003",
+      "category": "time",
+      "question": "Show total revenue for each month of 2025. Use YYYY-MM month labels and revenue rounded to two decimals, earliest first.",
+      "reference_sql": "SELECT STRFTIME(date, '%Y-%m') AS month, ROUND(SUM(revenue), 2) AS total_revenue FROM sales WHERE date >= DATE '2025-01-01' AND date < DATE '2026-01-01' GROUP BY month ORDER BY month",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "month",
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          "2025-01",
+          302684.75
+        ],
+        [
+          "2025-02",
+          283082.0
+        ],
+        [
+          "2025-03",
+          313772.01
+        ],
+        [
+          "2025-04",
+          295384.42
+        ],
+        [
+          "2025-05",
+          293717.63
+        ],
+        [
+          "2025-06",
+          287637.36
+        ],
+        [
+          "2025-07",
+          300554.2
+        ],
+        [
+          "2025-08",
+          293409.18
+        ],
+        [
+          "2025-09",
+          304068.78
+        ],
+        [
+          "2025-10",
+          294250.07
+        ],
+        [
+          "2025-11",
+          306345.38
+        ],
+        [
+          "2025-12",
+          276513.7
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "time_004",
+      "category": "time",
+      "question": "What is the total revenue in January 2024?",
+      "reference_sql": "SELECT ROUND(SUM(revenue), 2) AS total_revenue FROM sales WHERE date >= DATE '2024-01-01' AND date < DATE '2024-02-01'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          294060.44
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "time_005",
+      "category": "time",
+      "question": "How many sales records are in the first quarter of 2025?",
+      "reference_sql": "SELECT COUNT(*) AS record_count FROM sales WHERE date >= DATE '2025-01-01' AND date < DATE '2025-04-01'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "record_count"
+      ],
+      "expected_rows": [
+        [
+          1233
+        ]
+      ],
+      "split": "test"
+    },
+    {
+      "id": "time_006",
+      "category": "time",
+      "question": "What is total revenue in North during 2025?",
+      "reference_sql": "SELECT ROUND(SUM(revenue), 2) AS total_revenue FROM sales WHERE region = 'North' AND date >= DATE '2025-01-01' AND date < DATE '2026-01-01'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          1022121.26
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "time_007",
+      "category": "time",
+      "question": "Show yearly total units, with year as an integer, earliest first.",
+      "reference_sql": "SELECT YEAR(date) AS year, SUM(units) AS total_units FROM sales GROUP BY year ORDER BY year",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "year",
+        "total_units"
+      ],
+      "expected_rows": [
+        [
+          2024,
+          32807
+        ],
+        [
+          2025,
+          32475
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "time_008",
+      "category": "time",
+      "question": "What is the earliest sales date? Return YYYY-MM-DD.",
+      "reference_sql": "SELECT STRFTIME(MIN(date), '%Y-%m-%d') AS first_date FROM sales",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "first_date"
+      ],
+      "expected_rows": [
+        [
+          "2024-01-01"
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "time_009",
+      "category": "time",
+      "question": "What is the latest sales date? Return YYYY-MM-DD.",
+      "reference_sql": "SELECT STRFTIME(MAX(date), '%Y-%m-%d') AS last_date FROM sales",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "last_date"
+      ],
+      "expected_rows": [
+        [
+          "2025-12-30"
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "time_010",
+      "category": "time",
+      "question": "Show total revenue for each month across both years. Use YYYY-MM month labels, revenue rounded to two decimals, earliest first.",
+      "reference_sql": "SELECT STRFTIME(date, '%Y-%m') AS month, ROUND(SUM(revenue), 2) AS total_revenue FROM sales GROUP BY month ORDER BY month",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "month",
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          "2024-01",
+          294060.44
+        ],
+        [
+          "2024-02",
+          289908.67
+        ],
+        [
+          "2024-03",
+          310339.02
+        ],
+        [
+          "2024-04",
+          281434.54
+        ],
+        [
+          "2024-05",
+          318851.27
+        ],
+        [
+          "2024-06",
+          295600.21
+        ],
+        [
+          "2024-07",
+          277992.61
+        ],
+        [
+          "2024-08",
+          312846.6
+        ],
+        [
+          "2024-09",
+          289845.28
+        ],
+        [
+          "2024-10",
+          312874.84
+        ],
+        [
+          "2024-11",
+          281964.38
+        ],
+        [
+          "2024-12",
+          321937.22
+        ],
+        [
+          "2025-01",
+          302684.75
+        ],
+        [
+          "2025-02",
+          283082.0
+        ],
+        [
+          "2025-03",
+          313772.01
+        ],
+        [
+          "2025-04",
+          295384.42
+        ],
+        [
+          "2025-05",
+          293717.63
+        ],
+        [
+          "2025-06",
+          287637.36
+        ],
+        [
+          "2025-07",
+          300554.2
+        ],
+        [
+          "2025-08",
+          293409.18
+        ],
+        [
+          "2025-09",
+          304068.78
+        ],
+        [
+          "2025-10",
+          294250.07
+        ],
+        [
+          "2025-11",
+          306345.38
+        ],
+        [
+          "2025-12",
+          276513.7
+        ]
+      ],
+      "split": "test"
+    },
+    {
+      "id": "edge_001",
+      "category": "edge",
+      "question": "List product and revenue for records whose product is Nonexistent Product. Return an empty table if none exist.",
+      "reference_sql": "SELECT product, revenue FROM sales WHERE product = 'Nonexistent Product'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "product",
+        "revenue"
+      ],
+      "expected_rows": [],
+      "split": "dev"
+    },
+    {
+      "id": "edge_002",
+      "category": "edge",
+      "question": "How many records have a missing revenue value?",
+      "reference_sql": "SELECT COUNT(*) AS record_count FROM sales WHERE revenue IS NULL",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "record_count"
+      ],
+      "expected_rows": [
+        [
+          0
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "edge_003",
+      "category": "edge",
+      "question": "How many sales records are in 2030?",
+      "reference_sql": "SELECT COUNT(*) AS record_count FROM sales WHERE date >= DATE '2030-01-01' AND date < DATE '2031-01-01'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "record_count"
+      ],
+      "expected_rows": [
+        [
+          0
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "edge_004",
+      "category": "edge",
+      "question": "List all distinct sales channels alphabetically.",
+      "reference_sql": "SELECT DISTINCT channel FROM sales ORDER BY channel",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "table",
+      "expected_columns": [
+        "channel"
+      ],
+      "expected_rows": [
+        [
+          "Online"
+        ],
+        [
+          "Partner"
+        ],
+        [
+          "Retail"
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "edge_005",
+      "category": "edge",
+      "question": "What is the total revenue for a nonexistent product called Nonexistent Product? Return zero if there are no matching records.",
+      "reference_sql": "SELECT COALESCE(ROUND(SUM(revenue), 2), 0) AS total_revenue FROM sales WHERE product = 'Nonexistent Product'",
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "scalar",
+      "expected_columns": [
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          0.0
+        ]
+      ],
+      "split": "test"
+    },
+    {
+      "id": "edge_006",
+      "category": "edge",
+      "question": "Which customer has the highest total revenue?",
+      "reference_sql": null,
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "manual",
+      "review_rubric": "Explain that the requested field or information is unavailable; do not invent values. Ask for clarification or additional data where appropriate.",
+      "split": "dev"
+    },
+    {
+      "id": "edge_007",
+      "category": "edge",
+      "question": "What is total profit after subtracting actual costs?",
+      "reference_sql": null,
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "manual",
+      "review_rubric": "Explain that the requested field or information is unavailable; do not invent values. Ask for clarification or additional data where appropriate.",
+      "split": "dev"
+    },
+    {
+      "id": "edge_008",
+      "category": "edge",
+      "question": "Show total revenue by salesperson.",
+      "reference_sql": null,
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "manual",
+      "review_rubric": "Explain that the requested field or information is unavailable; do not invent values. Ask for clarification or additional data where appropriate.",
+      "split": "dev"
+    },
+    {
+      "id": "edge_009",
+      "category": "edge",
+      "question": "What is the customer retention rate?",
+      "reference_sql": null,
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "manual",
+      "review_rubric": "Explain that the requested field or information is unavailable; do not invent values. Ask for clarification or additional data where appropriate.",
+      "split": "dev"
+    },
+    {
+      "id": "edge_010",
+      "category": "edge",
+      "question": "How much revenue was refunded? Use the actual refund records.",
+      "reference_sql": null,
+      "ordered": false,
+      "tolerance": 0.01,
+      "check": "manual",
+      "review_rubric": "Explain that the requested field or information is unavailable; do not invent values. Ask for clarification or additional data where appropriate.",
+      "split": "test"
+    },
+    {
+      "id": "chart_001",
+      "category": "chart",
+      "question": "Show total revenue by product as a bar chart, highest revenue first. Round revenue to two decimals.",
+      "reference_sql": "SELECT product, ROUND(SUM(revenue), 2) AS total_revenue FROM sales GROUP BY product ORDER BY total_revenue DESC",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "chart",
+      "expected_chart": {
+        "type": "bar",
+        "x_index": 0,
+        "y_index": 1
+      },
+      "expected_columns": [
+        "product",
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          "Aurora Lamp",
+          1469425.71
+        ],
+        [
+          "Pebble Speaker",
+          1244861.83
+        ],
+        [
+          "Tide Mug",
+          1002624.54
+        ],
+        [
+          "Cedar Shelf",
+          968397.46
+        ],
+        [
+          "Meadow Chair",
+          760067.57
+        ],
+        [
+          "Linen Throw",
+          715744.29
+        ],
+        [
+          "Glow Bulb",
+          493853.17
+        ],
+        [
+          "Drift Clock",
+          484099.99
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "chart_002",
+      "category": "chart",
+      "question": "Show total revenue by region as a bar chart, highest revenue first. Round revenue to two decimals.",
+      "reference_sql": "SELECT region, ROUND(SUM(revenue), 2) AS total_revenue FROM sales GROUP BY region ORDER BY total_revenue DESC",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "chart",
+      "expected_chart": {
+        "type": "bar",
+        "x_index": 0,
+        "y_index": 1
+      },
+      "expected_columns": [
+        "region",
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          "North",
+          2017576.39
+        ],
+        [
+          "East",
+          1712479.59
+        ],
+        [
+          "South",
+          1361776.82
+        ],
+        [
+          "West",
+          1352903.52
+        ],
+        [
+          "Central",
+          694338.24
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "chart_003",
+      "category": "chart",
+      "question": "Plot monthly total revenue in 2025 as a line chart. Use YYYY-MM labels, revenue rounded to two decimals, earliest first.",
+      "reference_sql": "SELECT STRFTIME(date, '%Y-%m') AS month, ROUND(SUM(revenue), 2) AS total_revenue FROM sales WHERE date >= DATE '2025-01-01' AND date < DATE '2026-01-01' GROUP BY month ORDER BY month",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "chart",
+      "expected_chart": {
+        "type": "line",
+        "x_index": 0,
+        "y_index": 1
+      },
+      "expected_columns": [
+        "month",
+        "total_revenue"
+      ],
+      "expected_rows": [
+        [
+          "2025-01",
+          302684.75
+        ],
+        [
+          "2025-02",
+          283082.0
+        ],
+        [
+          "2025-03",
+          313772.01
+        ],
+        [
+          "2025-04",
+          295384.42
+        ],
+        [
+          "2025-05",
+          293717.63
+        ],
+        [
+          "2025-06",
+          287637.36
+        ],
+        [
+          "2025-07",
+          300554.2
+        ],
+        [
+          "2025-08",
+          293409.18
+        ],
+        [
+          "2025-09",
+          304068.78
+        ],
+        [
+          "2025-10",
+          294250.07
+        ],
+        [
+          "2025-11",
+          306345.38
+        ],
+        [
+          "2025-12",
+          276513.7
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "chart_004",
+      "category": "chart",
+      "question": "Show total units by channel as a bar chart, most units first.",
+      "reference_sql": "SELECT channel, SUM(units) AS total_units FROM sales GROUP BY channel ORDER BY total_units DESC",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "chart",
+      "expected_chart": {
+        "type": "bar",
+        "x_index": 0,
+        "y_index": 1
+      },
+      "expected_columns": [
+        "channel",
+        "total_units"
+      ],
+      "expected_rows": [
+        [
+          "Online",
+          32444
+        ],
+        [
+          "Retail",
+          19681
+        ],
+        [
+          "Partner",
+          13157
+        ]
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "chart_005",
+      "category": "chart",
+      "question": "Create a scatter chart with units on X and revenue on Y for North sales on 2024-01-01. Return only units and revenue, ordered by units then revenue ascending.",
+      "reference_sql": "SELECT units, revenue FROM sales WHERE region = 'North' AND date = DATE '2024-01-01' ORDER BY units, revenue",
+      "ordered": true,
+      "tolerance": 0.01,
+      "check": "chart",
+      "expected_chart": {
+        "type": "scatter",
+        "x_index": 0,
+        "y_index": 1
+      },
+      "expected_columns": [
+        "units",
+        "revenue"
+      ],
+      "expected_rows": [
+        [
+          3,
+          124.77
+        ],
+        [
+          5,
+          215.6
+        ]
+      ],
+      "split": "test"
+    }
+  ]
+}

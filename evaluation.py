@@ -11,23 +11,23 @@ from agent import run_agent
 test_cases = [
     {
         "question": "What is the total revenue?",
-        "expected": "52000",
+        "expected": "7139074.56",
     },
     {
-        "question": "Which brand has the highest total revenue?",
-        "expected": "Toyota",
+        "question": "Which product has the highest total revenue?",
+        "expected": "Aurora Lamp",
     },
     {
-        "question": "What is the total revenue in Quebec?",
-        "expected": "16500",
+        "question": "What is the total revenue in North?",
+        "expected": "2017576.39",
     },
     {
         "question": "How many sales records are there?",
-        "expected": "5",
+        "expected": "10000",
     },
     {
         "question": "Which region has the highest total revenue?",
-        "expected": "Ontario",
+        "expected": "North",
     },
 ]
 
@@ -80,7 +80,7 @@ def evaluate():
             result = run_agent(
                 case["question"] + "\nEnd with a standalone line: "
                 "FINAL_ANSWER: <value>. Use only a number (no units or currency), "
-                "brand, or region as the value, without a trailing period."
+                "product name, or region as the value, without a trailing period."
             )
             answer = str(result["messages"][-1].content)
             passed = answer_matches(answer, case["expected"])

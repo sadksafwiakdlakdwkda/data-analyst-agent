@@ -19,9 +19,11 @@ local FastAPI service for uploading datasets and asking questions.
   exhaustion. Dataset loading, model initialization, and tool-binding failures
   propagate to the caller.
 
-The included five-row CSV has `region`, `brand`, and `revenue` columns. Its total
-revenue is 52,000; Toyota totals 36,500, Honda 15,500, Ontario 35,500, and Quebec
-16,500. The application is a local prototype, not a hosted service.
+The included CSV contains 10,000 sales records from 2024-01-01 to 2025-12-30,
+with `date`, `region`, `product`, `channel`, `units`, `unit_price`, and `revenue`
+columns. Total revenue is 7,139,074.56. Aurora Lamp has the highest product
+revenue at 1,469,425.71; North has the highest regional revenue at 2,017,576.39.
+The application is a local prototype, not a hosted service.
 
 ## Setup
 
@@ -76,8 +78,8 @@ without considering that data flow. Real runs and evaluation can incur API fees.
 Example questions:
 
 - What is the total revenue?
-- Which brand has the highest total revenue?
-- What is the total revenue in Quebec?
+- Which product has the highest total revenue?
+- What is the total revenue in North?
 
 `sales.csv` is resolved relative to `agent.py`, not the current working directory.
 Keep the CSV beside that file for default CLI runs. Importing the module does
@@ -91,7 +93,7 @@ Python usage:
 from pathlib import Path
 from agent import run_agent, run_dataset_agent
 
-result = run_agent("Which brand has the highest total revenue?")
+result = run_agent("Which product has the highest total revenue?")
 print(result["messages"][-1].content)
 
 # Select another CSV; each run gets its own database and tools.
@@ -153,10 +155,10 @@ Open `http://127.0.0.1:8000/docs` to try the endpoints:
 
   ```json
   {
-    "answer": "Total revenue is 52000.",
+    "answer": "Total revenue is 7139074.56.",
     "sql": "SELECT * FROM (SELECT SUM(revenue) AS total FROM sales) AS limited_result LIMIT 100",
     "columns": ["total"],
-    "rows": [[52000]],
+    "rows": [[7139074.56]],
     "result_truncated": false,
     "chart": null
   }
@@ -172,7 +174,7 @@ In a second terminal, start the chat interface:
 ```
 
 Open `http://localhost:8501`, upload `sales.csv`, click **Load Dataset**, and ask
-"Which brand has the highest total revenue?". Check the answer, SQL block and
+"Which product has the highest total revenue?". Check the answer, SQL block and
 table, then ask another question to confirm previous tables remain in chat.
 For an API-only check, upload `sales.csv` using `/docs`, copy its `dataset_id`
 into `/ask`, and inspect the response fields. Ask for a filter that matches
@@ -227,11 +229,11 @@ bound returned data, not query execution or serialization memory usage.
 
 ### Chart tool
 
-Ask "Show total revenue by brand as a bar chart." The model should inspect the
+Ask "Show total revenue by product as a bar chart." The model should inspect the
 dataset, execute an aggregate query, then call:
 
 ```python
-create_chart(chart_type="bar", x="brand", y="total_revenue", title="Revenue by brand")
+create_chart(chart_type="bar", x="product", y="total_revenue", title="Revenue by product")
 ```
 
 The tool accepts only `bar`, `line`, or `scatter`, two exact unambiguous column
@@ -261,12 +263,12 @@ duplicates data or executes another query:
 
 ```json
 {
-  "answer": "Toyota has the highest total revenue.",
-  "sql": "SELECT * FROM (SELECT brand, SUM(revenue) AS total_revenue FROM sales GROUP BY brand ORDER BY total_revenue DESC) AS limited_result LIMIT 100",
-  "columns": ["brand", "total_revenue"],
-  "rows": [["Toyota", 36500], ["Honda", 15500]],
+  "answer": "Aurora Lamp has the highest total revenue.",
+  "sql": "SELECT * FROM (SELECT product, ROUND(SUM(revenue), 2) AS total_revenue FROM sales GROUP BY product ORDER BY total_revenue DESC) AS limited_result LIMIT 100",
+  "columns": ["product", "total_revenue"],
+  "rows": [["Aurora Lamp", 1469425.71], ["Pebble Speaker", 1244861.83], ["Tide Mug", 1002624.54], ["Cedar Shelf", 968397.46], ["Meadow Chair", 760067.57], ["Linen Throw", 715744.29], ["Glow Bulb", 493853.17], ["Drift Clock", 484099.99]],
   "result_truncated": false,
-  "chart": {"type": "bar", "x": "brand", "y": "total_revenue", "title": "Revenue by brand"}
+  "chart": {"type": "bar", "x": "product", "y": "total_revenue", "title": "Revenue by product"}
 }
 ```
 
@@ -357,14 +359,45 @@ Run the five-question live evaluation separately:
 .\.venv\Scripts\python.exe evaluation.py
 ```
 
+The cases use the bundled `sales.csv`: total revenue (7,139,074.56), highest-revenue
+product (Aurora Lamp), North revenue (2,017,576.39), record count (10,000), and
+highest-revenue region (North). Update the questions and expected values in
+`evaluation.py` if you replace this dataset.
+
 Evaluation uses the same workflow as the CLI and asks for a final standalone
 `FINAL_ANSWER: <value>` line. Numbers are compared by exact decimal value,
 including valid thousands separators; categorical values are compared exactly
 after case/whitespace normalization. Thus `15` does not match `5`, and prose
-merely mentioning `Toyota` does not match `Toyota`. An answer consisting only of
+merely mentioning `Aurora Lamp` does not match `Aurora Lamp`. An answer consisting only of
 the exact value is also accepted. Missing/invalid formatting can fail an otherwise
 correct response. The evaluator checks the declared final value, not the reasoning
 or tool-use quality. Failed cases do not abort remaining cases.
+
+### Structured evidence in the 50-case benchmark
+
+Run `python -m evals.runner` for offline reference checks, or add
+`--live --mode both --category basic --limit 3` for a small paid model comparison.
+Live reports are saved under `evals/results/`.
+
+`inspect_dataset` preserves its text output and additionally attaches a
+`{"row_count": ...}` artifact to its ToolMessage. Ordinary `.invoke({})` calls
+still return text. The artifact is generated by the tool, not supplied by the model.
+No SQL result fields or API response formats are changed.
+
+Suite version 2 explicitly allows `inspect_row_count` evidence for `basic_002`
+(the total number of sales records). This case can pass without SQL only when
+the latest successful inspection has an integer row count exactly matching the
+reference and the final answer is also correct. A subsequent failed inspection
+invalidates earlier inspection evidence. No SQL call may have been attempted;
+incorrect or failed SQL results cannot be rescued by inspection metadata.
+Other cases still require their SQL results. Correct text alone, text-only
+inspection messages, or model-supplied metadata do not satisfy this rule.
+
+Scores distinguish `result_passed` (accepted tool evidence), `sql_result_passed`
+(matching structured SQL data), `answer_passed`, and `evidence_source` (`sql`,
+`inspect_row_count`, or null). Inspection-only passes do not increase SQL call
+counts. Reports include `inspection_evidence_passes`. Historical reports are
+unchanged; rerun the evaluation to obtain version 2 scores and artifacts.
 
 ## SQL restrictions and security limits
 
@@ -406,7 +439,7 @@ message; initialization and tool-binding exceptions propagate to the caller.
 agent.py                 Tools, SQL validation, lazy LLM setup, graph, CLI
 api.py                   Local FastAPI upload and question endpoints
 evaluation.py            Live evaluation and exact-answer matching
-sales.csv                Included five-row dataset
+sales.csv                Included 10,000-row sales dataset
 requirements.txt         Pinned direct runtime dependencies
 requirements-dev.txt     Runtime requirements plus Pytest
 .env.example             Credential placeholder
