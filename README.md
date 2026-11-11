@@ -156,6 +156,7 @@ Open `http://127.0.0.1:8000/docs` to try the endpoints:
   ```json
   {
     "answer": "Total revenue is 7139074.56.",
+    "conversation_id": "<server-generated conversation UUID>",
     "sql": "SELECT * FROM (SELECT SUM(revenue) AS total FROM sales) AS limited_result LIMIT 100",
     "columns": ["total"],
     "rows": [[7139074.56]],
@@ -166,6 +167,66 @@ Open `http://127.0.0.1:8000/docs` to try the endpoints:
 
   Questions must contain 1–2,000 characters;
   a missing dataset returns 404. Actual analysis requires model credentials.
+
+### Conversation context
+
+Omit `conversation_id` (or send null) on the first `/ask` request. The server
+creates an ID, binds it to the dataset, and returns it in the response. Reuse
+that ID for subsequent requests:
+
+```json
+{
+  "question": "Only the Online channel?",
+  "dataset_id": "<same dataset UUID>",
+  "conversation_id": "<UUID from the previous response>"
+}
+```
+
+An unknown conversation returns 404; using it with a different existing dataset
+returns 409. Older clients can keep omitting the ID, creating an independent
+conversation for every request. Bindings are stored in `uploads/conversations.db`
+(SQLite), which is ignored by Git and persists in the existing Docker uploads
+volume. Bindings are retained until the database is removed; automatic expiry
+is not implemented. The API remains a local service without authentication.
+
+Streamlit retains the returned ID for later questions. Loading a dataset or
+clicking **New conversation** clears the displayed history and starts a new
+conversation on the next question. New conversation keeps the selected dataset.
+The ID is held in Streamlit session state; a browser reload/new session does not
+automatically restore a previous ID. A caller retaining an ID can reuse it after
+an API restart as long as the database and dataset are still available.
+
+The backend saves each completed turn, including user messages, model replies,
+tool calls, tool outputs and structured artifacts, in the same SQLite database.
+Subsequent requests with the same conversation ID replay that history to the
+model before the new question. This supports follow-ups such as "Only the Online
+channel?" after a question about product revenue. The model resolves references;
+ambiguous follow-ups should prompt clarification rather than a guessed filter.
+No explicit filter-state extraction or conversation summarization is implemented.
+
+At most 10 recent turns are retained per conversation. Replay also has a
+200,000-character serialized-history budget (not a token budget); only complete,
+contiguous recent turns are loaded, preserving tool-call/result pairs. If the
+latest turn alone exceeds the budget, no older context is replayed. Transient
+system instructions are not persisted. A failure caught by the Agent is saved
+as a completed failure turn; setup errors or uncaught exceptions do not save a
+partial turn. On workflow step exhaustion, partial tool calls are discarded and
+the question plus a failure answer are retained.
+
+Error budgets, exposed SQL results and chart state belong to the current turn.
+History remains available for reference, but a new calculation or chart needs a
+fresh query; a clarification-only response does not redisplay an old table or
+chart. Each request still uses its own DuckDB connection. No live database
+connection is stored in SQLite.
+
+Within one API process, requests for the same conversation are serialized while
+different conversations can run concurrently. For multiple API workers, a SQLite
+revision check prevents lost updates; conflicting requests return 409 and must be
+retried. Revision checks do not avoid duplicated model work across workers.
+The frontend retains its existing chat display; refreshing the browser still
+does not provide a conversation browser or automatic transcript restoration.
+Stored history can contain dataset values and model/tool messages; it follows
+the same local storage and model-data flow as the rest of the application.
 
 In a second terminal, start the chat interface:
 

@@ -208,6 +208,7 @@ def test_upload_and_ask_full_graph(client, monkeypatch):
     response = client.post("/ask", json={"question": "Revenue?", "dataset_id": dataset_id})
     assert response.status_code == 200
     assert response.json() == {
+        "conversation_id": response.json()["conversation_id"],
         "answer": "Analysis complete.",
         "sql": "SELECT * FROM (SELECT product, revenue FROM sales) AS limited_result LIMIT 100",
         "columns": ["product", "revenue"], "rows": [["Toyota", 11]],
@@ -219,7 +220,8 @@ def test_legacy_agent_response_and_request_compatibility(client, monkeypatch):
     monkeypatch.setattr(api, "run_dataset_agent", lambda **_: {"messages": [AIMessage(content="old answer")]})
     response = client.post("/ask", json={"question": "Revenue?", "dataset_id": upload(client)})
     assert response.status_code == 200
-    assert response.json() == {"answer": "old answer", **EMPTY, **CHART_DEFAULTS}
+    assert response.json() == {"answer": "old answer", **EMPTY, **CHART_DEFAULTS,
+                               "conversation_id": response.json()["conversation_id"]}
 
 
 def test_api_json_types(client, monkeypatch):
@@ -236,7 +238,8 @@ def test_api_empty_result(client, monkeypatch, query):
     mock_model(monkeypatch, [[sql_call(query)]] if query else [])
     response = client.post("/ask", json={"question": "test", "dataset_id": upload(client)})
     assert response.status_code == 200
-    assert response.json() == {"answer": "Analysis complete.", **EMPTY, **CHART_DEFAULTS}
+    assert response.json() == {"answer": "Analysis complete.", **EMPTY, **CHART_DEFAULTS,
+                               "conversation_id": response.json()["conversation_id"]}
 
 
 def test_api_request_errors(client):
@@ -274,7 +277,8 @@ def test_concurrent_api_requests_are_isolated(client, monkeypatch):
         results = list(pool.map(ask, requests))
     assert results[0]["rows"] == [["First", 11]]
     assert results[1]["rows"] == [["Second", 73]]
-    assert results[2] == {"answer": "done", **EMPTY, **CHART_DEFAULTS}
+    assert results[2] == {"answer": "done", **EMPTY, **CHART_DEFAULTS,
+                          "conversation_id": results[2]["conversation_id"]}
     assert results[3]["rows"] == [["First", 11]]
 
 

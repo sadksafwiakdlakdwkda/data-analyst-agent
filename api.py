@@ -4,6 +4,11 @@ from pathlib import Path
 from uuid import uuid4, UUID
 from typing import Any, Literal
 from agent import run_dataset_agent
+from langchain_core.messages import HumanMessage
+from conversations import (
+    ConversationConflict, ConversationDatasetMismatch, ConversationNotFound,
+    conversation_lock, load_history, resolve_conversation, save_turn,
+)
 import duckdb
 
 
@@ -48,6 +53,7 @@ def validate_csv(file_path: Path):
 class QuestionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     dataset_id: UUID
+    conversation_id: UUID | None = None
 
 
 class ChartConfig(BaseModel):
@@ -59,6 +65,7 @@ class ChartConfig(BaseModel):
 
 class QuestionResponse(BaseModel):
     answer: str
+    conversation_id: UUID
     sql: str | None = None
     columns: list[str] = Field(default_factory=list)
     rows: list[list[Any]] = Field(default_factory=list)
@@ -81,21 +88,36 @@ def ask(request: QuestionRequest):
             detail="Dataset not found"
         )
 
-    result = run_dataset_agent(
-        question=request.question,
-        dataset_path=dataset_path
-    )
+    try:
+        conversation_id = resolve_conversation(
+            UPLOAD_DIR / "conversations.db", request.dataset_id, request.conversation_id
+        )
+    except ConversationNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found") from None
+    except ConversationDatasetMismatch:
+        raise HTTPException(status_code=409, detail="Conversation belongs to another dataset") from None
 
-    answer = str(result["messages"][-1].content)
-
-    return QuestionResponse(
-        answer=answer,
-        sql=result.get("sql"),
-        columns=result.get("columns", []),
-        rows=result.get("rows", []),
-        result_truncated=result.get("result_truncated", False),
-        chart=result.get("chart"),
-    )
+    db_path = UPLOAD_DIR / "conversations.db"
+    with conversation_lock(db_path, conversation_id):
+        history, revision = load_history(db_path, conversation_id)
+        result = run_dataset_agent(
+            question=request.question, dataset_path=dataset_path, history=history,
+        )
+        response = QuestionResponse(
+            answer=str(result["messages"][-1].content),
+            conversation_id=conversation_id,
+            sql=result.get("sql"),
+            columns=result.get("columns", []),
+            rows=result.get("rows", []),
+            result_truncated=result.get("result_truncated", False),
+            chart=result.get("chart"),
+        )
+        turn = result.get("turn_messages", [HumanMessage(content=request.question), *result["messages"]])
+        try:
+            save_turn(db_path, conversation_id, revision, turn)
+        except ConversationConflict:
+            raise HTTPException(status_code=409, detail="Conversation changed during analysis; retry the question") from None
+        return response
 @app.post("/upload")
 async def upload_csv(file: UploadFile = File(...)):
 

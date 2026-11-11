@@ -27,6 +27,14 @@ MAX_OUTPUT_CHARS = 10_000
 MAX_RESULT_ROWS = 100
 MAX_SQL_ERRORS = 2
 
+
+class AnalysisState(MessagesState):
+    turn_start: int
+
+
+def current_turn_messages(state):
+    return state["messages"][state.get("turn_start", 0):]
+
 SYSTEM_PROMPT = (
     "You are a reliable data analysis assistant. "
     "Always inspect the dataset before generating SQL. "
@@ -40,6 +48,9 @@ SYSTEM_PROMPT = (
     "If SQL fails, inspect the error message and correct the query before retrying. "
     "Never repeat the exact same failed SQL. "
     "Never invent query results. "
+    "Use earlier conversation messages to resolve follow-up questions and filters. "
+    "If a follow-up is ambiguous, ask for clarification. "
+    "Earlier query results are context only; execute fresh SQL in this turn for new calculations or charts. "
     "If analysis fails, explain the problem."
 )
 
@@ -187,7 +198,7 @@ def create_chart(
     Use exact column names. Bar/line require numeric y; scatter requires numeric
     x and y. Rows with null axes are excluded. SQL must do aggregation/ordering.
     """
-    messages = state["messages"]
+    messages = current_turn_messages(state)
     batch = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
     if batch and any(call["name"] == "execute_sql" for call in batch.tool_calls):
         return "Chart Error: Run execute_sql in a separate batch before create_chart.", None
@@ -291,11 +302,11 @@ def model_failure():
     }
 
 
-def after_tools(state: MessagesState):
+def after_tools(state: AnalysisState):
     """Stop after the configured number of tool errors."""
     errors = sum(
         1
-        for message in state["messages"]
+        for message in current_turn_messages(state)
         if isinstance(message, ToolMessage)
         and (
             message.status == "error"
@@ -313,11 +324,11 @@ def after_tools(state: MessagesState):
     return "failure" if errors >= MAX_SQL_ERRORS else "llm"
 
 
-def failure_node(state: MessagesState):
+def failure_node(state: AnalysisState):
     """Tell the final model call to stop using tools."""
     return {
         "messages": [
-            HumanMessage(
+            SystemMessage(
                 content=(
                     "The tool error limit has been reached. "
                     "Do not call any more tools. "
@@ -339,21 +350,21 @@ def create_agent_graph(dataset_tools):
     model = get_models()
     model_with_tools = model.bind_tools(dataset_tools)
 
-    def call_model(state: MessagesState):
+    def call_model(state: AnalysisState):
         try:
             response = model_with_tools.invoke(state["messages"])
             return {"messages": [response]}
         except Exception:
             return model_failure()
 
-    def final_failure(state: MessagesState):
+    def final_failure(state: AnalysisState):
         try:
             response = model.invoke(state["messages"])
             return {"messages": [response]}
         except Exception:
             return model_failure()
 
-    graph = StateGraph(MessagesState)
+    graph = StateGraph(AnalysisState)
     graph.add_node("llm", call_model)
     graph.add_node(
         "tools", ToolNode(dataset_tools, handle_tool_errors=handle_tool_error)
@@ -378,6 +389,7 @@ def run_agent(
     *,
     dataset_path: Path | None = None,
     recursion_limit: int = 20,
+    history=None,
 ):
     """Run one analysis with a dedicated connection, tools, and graph."""
     path = CSV_PATH if dataset_path is None else Path(dataset_path)
@@ -385,19 +397,19 @@ def run_agent(
     try:
         dataset_tools = create_tools(connection)
         dataset_agent = create_agent_graph(dataset_tools)
+        initial_messages = [SystemMessage(content=SYSTEM_PROMPT), *(history or []), HumanMessage(content=question)]
+        turn_start = len(initial_messages) - 1
         try:
             result = dataset_agent.invoke(
                 {
-                    "messages": [
-                        SystemMessage(content=SYSTEM_PROMPT),
-                        HumanMessage(content=question),
-                    ]
+                    "messages": initial_messages,
+                    "turn_start": turn_start,
                 },
                 config={"recursion_limit": recursion_limit},
             )
         except GraphRecursionError:
             result = {
-                "messages": [
+                "messages": [*initial_messages,
                     AIMessage(
                         content=(
                             "Analysis stopped because the workflow step limit was reached. "
@@ -406,23 +418,26 @@ def run_agent(
                     )
                 ]
             }
-        query = latest_query_result(result["messages"])
+        turn_messages = result["messages"][turn_start:]
+        query = latest_query_result(turn_messages)
         return {
             **result, **query,
+            **({"turn_messages": turn_messages} if history is not None else {}),
             "result_truncated": query.get("result_truncated", False),
-            "chart": latest_chart(result["messages"]),
+            "chart": latest_chart(turn_messages),
         }
     finally:
         connection.close()
 
 
 def run_dataset_agent(
-    question: str, dataset_path: Path, *, recursion_limit: int = 20
+    question: str, dataset_path: Path, *, recursion_limit: int = 20, history=None
 ):
     """Compatibility wrapper for the existing FastAPI /ask endpoint."""
-    return run_agent(
-        question, dataset_path=dataset_path, recursion_limit=recursion_limit
-    )
+    options = {"dataset_path": dataset_path, "recursion_limit": recursion_limit}
+    if history is not None:
+        options["history"] = history
+    return run_agent(question, **options)
 
 
 if __name__ == "__main__":

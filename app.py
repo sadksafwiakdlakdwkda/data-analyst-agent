@@ -65,6 +65,9 @@ if "dataset_id" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+if "conversation_id" not in st.session_state:
+    st.session_state.conversation_id = None
+
 
 # Sidebar: CSV Upload
 with st.sidebar:
@@ -96,6 +99,7 @@ with st.sidebar:
                 data = response.json()
 
             st.session_state.dataset_id = data["dataset_id"]
+            st.session_state.conversation_id = None
             st.session_state.messages = []
 
             st.success("Dataset loaded!")
@@ -105,6 +109,10 @@ with st.sidebar:
 
         except requests.RequestException as e:
             st.error(f"Upload failed: {e}")
+
+    if st.button("New conversation", key="new_conversation", disabled=st.session_state.dataset_id is None):
+        st.session_state.conversation_id = None
+        st.session_state.messages = []
 
 
 # Main: Chat Interface
@@ -143,7 +151,8 @@ else:
                         f"{API_URL}/ask",
                         json={
                             "question": question,
-                            "dataset_id": st.session_state.dataset_id
+                            "dataset_id": st.session_state.dataset_id,
+                            "conversation_id": st.session_state.conversation_id,
                         },
                         timeout=120
                     )
@@ -151,6 +160,9 @@ else:
                     response.raise_for_status()
                     data = response.json()
 
+                st.session_state.conversation_id = data.get(
+                    "conversation_id", st.session_state.conversation_id
+                )
                 message = {
                     "role": "assistant",
                     "content": data["answer"],
